@@ -29,25 +29,25 @@ def test(dataset_name='multiviewx'):
                                T.Compose([T.Resize([270, 480]), T.ToTensor(), ]))
     else:
         raise Exception('must choose from [wildtrack, multiviewx]')
-    grid_size = list(map(lambda x: x * 3, dataset.reducedgrid_shape))
+    grid_size = list(map(lambda x: x * 3, dataset.Rgrid_shape))
     bbox_by_pos_cam = dataset.base.read_pom()
     results = np.loadtxt(result_fpath)
 
     video = cv2.VideoWriter(f'{dataset_name}_test.avi', cv2.VideoWriter_fourcc(*"MJPG"), 2, (1580, 1060))
     for index in tqdm.tqdm(range(len(dataset))):
         img_comb = np.zeros([1060, 1580, 3]).astype('uint8')
-        map_res = np.zeros(dataset.reducedgrid_shape)
+        map_res = np.zeros(dataset.Rgrid_shape)
         imgs, map_gt, imgs_gt, frame = dataset.__getitem__(index)
         res_map_grid = results[results[:, 0] == frame, 1:]
         for ij in res_map_grid:
-            i, j = (ij / dataset.grid_reduce).astype(int)
+            i, j = (ij / dataset.world_reduce).astype(int)
             if dataset.base.indexing == 'xy':
                 i, j = j, i
                 map_res[i, j] = 1
             else:
                 map_res[i, j] = 1
         map_res = _traget_transform(torch.from_numpy(map_res).unsqueeze(0).unsqueeze(0).float(),
-                                    dataset.map_kernel)
+                                    dataset.world_kernel)
         map_res = F.interpolate(map_res, grid_size).squeeze().numpy()
         map_res = np.uint8(255 * map_res)
         map_res = cv2.applyColorMap(map_res, cv2.COLORMAP_JET)
@@ -59,7 +59,7 @@ def test(dataset_name='multiviewx'):
         # plt.show()
 
         res_posID = dataset.base.get_pos_from_worldgrid(res_map_grid.transpose())
-        gt_map_grid = map_gt[0].nonzero().cpu().numpy() * dataset.grid_reduce
+        gt_map_grid = map_gt[0].nonzero().cpu().numpy() * dataset.world_reduce
         gt_posID = dataset.base.get_pos_from_worldgrid(gt_map_grid.transpose())
 
         for cam in range(dataset.num_cam):

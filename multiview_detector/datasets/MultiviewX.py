@@ -14,15 +14,22 @@ extrinsic_camera_matrix_filenames = ['extr_Camera1.xml', 'extr_Camera2.xml', 'ex
 class MultiviewX(VisionDataset):
     def __init__(self, root):
         super().__init__(root)
+        # image of shape C,H,W (C,N_row,N_col); xy indexging; x,y (w,h) (n_col,n_row)
         # MultiviewX has xy-indexing: H*W=640*1000, thus x is \in [0,1000), y \in [0,640)
         # MultiviewX has consistent unit: meter (m) for calibration & pos annotation
         self.__name__ = 'MultiviewX'
         self.img_shape, self.worldgrid_shape = [1080, 1920], [640, 1000]  # H,W; N_row,N_col
         self.num_cam, self.num_frame = 6, 400
-        # x,y correspond to w,h
+        # world x,y correspond to w,h
         self.indexing = 'xy'
-        # convert x,y to i,j, then use i,j for world map indexing
-        self.worldgrid2worldcoord_mat = np.array([[0, 0.025, 0], [0.025, 0, 0], [0, 0, 1]])
+        self.world_indexing_from_xy_mat = np.eye(3)
+        self.world_indexing_from_ij_mat = np.array([[0, 1, 0], [1, 0, 0], [0, 0, 1]])
+        # image is in xy indexing by default
+        self.img_xy_from_xy_mat = np.eye(3)
+        self.img_xy_from_ij_mat = np.array([[0, 1, 0], [1, 0, 0], [0, 0, 1]])
+        # unit in meters
+        self.worldcoord_unit = 1
+        self.worldcoord_from_worldgrid_mat = np.array([[0.025, 0, 0], [0, 0.025, 0], [0, 0, 1]])
         self.intrinsic_matrices, self.extrinsic_matrices = zip(
             *[self.get_intrinsic_extrinsic_matrix(cam) for cam in range(self.num_cam)])
 
@@ -41,25 +48,25 @@ class MultiviewX(VisionDataset):
     def get_worldgrid_from_pos(self, pos):
         grid_x = pos % 1000
         grid_y = pos // 1000
-        return np.array([grid_x, grid_y], dtype=int)
+        return np.array([[grid_x], [grid_y]], dtype=int).reshape([2, -1])
 
     def get_pos_from_worldgrid(self, worldgrid):
-        grid_x, grid_y = worldgrid
+        grid_x, grid_y = worldgrid[0, :], worldgrid[1, :]
         return grid_x + grid_y * 1000
 
     def get_worldgrid_from_worldcoord(self, world_coord):
         # datasets default unit: centimeter & origin: (-300,-900)
-        coord_x, coord_y = world_coord
+        coord_x, coord_y = world_coord[0, :], world_coord[1, :]
         grid_x = coord_x * 40
         grid_y = coord_y * 40
-        return np.array([grid_x, grid_y], dtype=int)
+        return np.array([[grid_x], [grid_y]], dtype=int).reshape([2, -1])
 
     def get_worldcoord_from_worldgrid(self, worldgrid):
         # datasets default unit: centimeter & origin: (-300,-900)
-        grid_x, grid_y = worldgrid
+        grid_x, grid_y = worldgrid[0, :], worldgrid[1, :]
         coord_x = grid_x / 40
         coord_y = grid_y / 40
-        return np.array([coord_x, coord_y])
+        return np.array([[coord_x], [coord_y]]).reshape([2, -1])
 
     def get_worldcoord_from_pos(self, pos):
         grid = self.get_worldgrid_from_pos(pos)
@@ -110,27 +117,30 @@ class MultiviewX(VisionDataset):
 
 
 def test():
-    from multiview_detector.utils.projection import get_imagecoord_from_worldcoord
+    from multiview_detector.utils.projection import get_worldcoord_from_imagecoord
     dataset = MultiviewX(os.path.expanduser('~/Data/MultiviewX'), )
     pom = dataset.read_pom()
 
-    foot_3ds = dataset.get_worldcoord_from_pos(np.arange(np.product(dataset.worldgrid_shape)))
-    errors = []
     for cam in range(dataset.num_cam):
-        projected_foot_2d = get_imagecoord_from_worldcoord(foot_3ds, dataset.intrinsic_matrices[cam],
-                                                           dataset.extrinsic_matrices[cam])
-        for pos in range(np.product(dataset.worldgrid_shape)):
+        head_errors, foot_errors = [], []
+        for pos in range(0, np.product(dataset.worldgrid_shape), 16):
             bbox = pom[pos][cam]
-            foot_3d = dataset.get_worldcoord_from_pos(pos)
+            foot_wc = dataset.get_worldcoord_from_pos(pos)
             if bbox is None:
                 continue
-            foot_2d = [(bbox[0] + bbox[2]) / 2, bbox[3]]
-            p_foot_2d = projected_foot_2d[:, pos]
-            p_foot_2d = np.maximum(p_foot_2d, 0)
-            p_foot_2d = np.minimum(p_foot_2d, [1920, 1080])
-            errors.append(np.linalg.norm(p_foot_2d - foot_2d))
+            foot_ic = np.array([[(bbox[0] + bbox[2]) / 2, bbox[3]]]).T
+            head_ic = np.array([[(bbox[0] + bbox[2]) / 2, bbox[1]]]).T
+            p_foot_wc = get_worldcoord_from_imagecoord(foot_ic, dataset.intrinsic_matrices[cam],
+                                                       dataset.extrinsic_matrices[cam])
+            p_head_wc = get_worldcoord_from_imagecoord(head_ic, dataset.intrinsic_matrices[cam],
+                                                       dataset.extrinsic_matrices[cam], z=1.8 / dataset.worldcoord_unit)
+            head_errors.append(np.linalg.norm(p_head_wc - foot_wc))
+            foot_errors.append(np.linalg.norm(p_foot_wc - foot_wc))
+            pass
 
-    print(f'average error in image pixels: {np.average(errors)}')
+        print(f'average head error: {np.average(head_errors) * dataset.worldcoord_unit}, '
+              f'average foot error: {np.average(foot_errors) * dataset.worldcoord_unit} (world meters)')
+        pass
     pass
 
 

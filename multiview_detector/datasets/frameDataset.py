@@ -11,17 +11,18 @@ from multiview_detector.utils.projection import *
 
 class frameDataset(VisionDataset):
     def __init__(self, base, train=True, transform=ToTensor(), target_transform=ToTensor(),
-                 reID=False, grid_reduce=4, img_reduce=4, train_ratio=0.9, force_download=True):
+                 reID=False, world_reduce=4, img_reduce=12, train_ratio=0.9, force_download=True):
         super().__init__(base.root, transform=transform, target_transform=target_transform)
 
-        map_sigma, map_kernel_size = 20 / grid_reduce, 20
+        # world (grid) reduce: on top of the 2.5cm grid
+        world_sigma, world_kernel_size = 20 / world_reduce, 20
         img_sigma, img_kernel_size = 10 / img_reduce, 10
-        self.reID, self.grid_reduce, self.img_reduce = reID, grid_reduce, img_reduce
+        self.reID, self.world_reduce, self.img_reduce = reID, world_reduce, img_reduce
 
         self.base = base
         self.root, self.num_cam, self.num_frame = base.root, base.num_cam, base.num_frame
         self.img_shape, self.worldgrid_shape = base.img_shape, base.worldgrid_shape  # H,W; N_row,N_col
-        self.reducedgrid_shape = list(map(lambda x: int(x / self.grid_reduce), self.worldgrid_shape))
+        self.Rgrid_shape = list(map(lambda x: x // self.world_reduce, self.worldgrid_shape))
 
         if train:
             frame_range = range(0, int(self.num_frame * train_ratio))
@@ -29,22 +30,23 @@ class frameDataset(VisionDataset):
             frame_range = range(int(self.num_frame * train_ratio), self.num_frame)
 
         self.img_fpaths = self.base.get_image_fpaths(frame_range)
-        self.map_gt = {}
+        self.world_gt = {}
         self.imgs_head_foot_gt = {}
         self.download(frame_range)
 
+        # gt in mot format for evaluation
         self.gt_fpath = os.path.join(self.root, 'gt.txt')
         if not os.path.exists(self.gt_fpath) or force_download:
             self.prepare_gt()
 
-        x, y = np.meshgrid(np.arange(-map_kernel_size, map_kernel_size + 1),
-                           np.arange(-map_kernel_size, map_kernel_size + 1))
+        x, y = np.meshgrid(np.arange(-world_kernel_size, world_kernel_size + 1),
+                           np.arange(-world_kernel_size, world_kernel_size + 1))
         pos = np.stack([x, y], axis=2)
-        map_kernel = multivariate_normal.pdf(pos, [0, 0], np.identity(2) * map_sigma)
-        map_kernel = map_kernel / map_kernel.max()
-        kernel_size = map_kernel.shape[0]
-        self.map_kernel = torch.zeros([1, 1, kernel_size, kernel_size], requires_grad=False)
-        self.map_kernel[0, 0] = torch.from_numpy(map_kernel)
+        world_kernel = multivariate_normal.pdf(pos, [0, 0], np.identity(2) * world_sigma)
+        world_kernel = world_kernel / world_kernel.max()
+        kernel_size = world_kernel.shape[0]
+        self.world_kernel = torch.zeros([1, 1, kernel_size, kernel_size], requires_grad=False)
+        self.world_kernel[0, 0] = torch.from_numpy(world_kernel)
 
         x, y = np.meshgrid(np.arange(-img_kernel_size, img_kernel_size + 1),
                            np.arange(-img_kernel_size, img_kernel_size + 1))
@@ -73,7 +75,7 @@ class frameDataset(VisionDataset):
                 in_cam_range = sum(is_in_cam(cam) for cam in range(self.num_cam))
                 if not in_cam_range:
                     continue
-                grid_x, grid_y = self.base.get_worldgrid_from_pos(single_pedestrian['positionID'])
+                grid_x, grid_y = self.base.get_worldgrid_from_pos(single_pedestrian['positionID']).squeeze()
                 og_gt.append(np.array([frame, grid_x, grid_y]))
         og_gt = np.stack(og_gt, axis=0)
         os.makedirs(os.path.dirname(self.gt_fpath), exist_ok=True)
@@ -86,43 +88,41 @@ class frameDataset(VisionDataset):
                 with open(os.path.join(self.root, 'annotations_positions', fname)) as json_file:
                     all_pedestrians = json.load(json_file)
                 i_s, j_s, v_s = [], [], []
-                head_row_cam_s, head_col_cam_s = [[] for _ in range(self.num_cam)], \
-                                                 [[] for _ in range(self.num_cam)]
-                foot_row_cam_s, foot_col_cam_s, v_cam_s = [[] for _ in range(self.num_cam)], \
-                                                          [[] for _ in range(self.num_cam)], \
-                                                          [[] for _ in range(self.num_cam)]
+                head_i_s, head_j_s = [[] for _ in range(self.num_cam)], [[] for _ in range(self.num_cam)]
+                foot_i_s, foot_j_s = [[] for _ in range(self.num_cam)], [[] for _ in range(self.num_cam)]
+                pid_v_s = [[] for _ in range(self.num_cam)]
                 for single_pedestrian in all_pedestrians:
-                    x, y = self.base.get_worldgrid_from_pos(single_pedestrian['positionID'])
+                    grid_x, grid_y = self.base.get_worldgrid_from_pos(single_pedestrian['positionID']).squeeze()
                     if self.base.indexing == 'xy':
-                        i_s.append(int(y / self.grid_reduce))
-                        j_s.append(int(x / self.grid_reduce))
+                        i_s.append(grid_y // self.world_reduce)
+                        j_s.append(grid_x // self.world_reduce)
                     else:
-                        i_s.append(int(x / self.grid_reduce))
-                        j_s.append(int(y / self.grid_reduce))
+                        i_s.append(grid_x // self.world_reduce)
+                        j_s.append(grid_y // self.world_reduce)
                     v_s.append(single_pedestrian['personID'] + 1 if self.reID else 1)
                     for cam in range(self.num_cam):
-                        x = max(min(int((single_pedestrian['views'][cam]['xmin'] +
-                                         single_pedestrian['views'][cam]['xmax']) / 2), self.img_shape[1] - 1), 0)
+                        x = max(min((single_pedestrian['views'][cam]['xmin'] +
+                                     single_pedestrian['views'][cam]['xmax']) // 2, self.img_shape[1] - 1), 0)
                         y_head = max(single_pedestrian['views'][cam]['ymin'], 0)
                         y_foot = min(single_pedestrian['views'][cam]['ymax'], self.img_shape[0] - 1)
-                        if x > 0 and y > 0:
-                            head_row_cam_s[cam].append(y_head)
-                            head_col_cam_s[cam].append(x)
-                            foot_row_cam_s[cam].append(y_foot)
-                            foot_col_cam_s[cam].append(x)
-                            v_cam_s[cam].append(single_pedestrian['personID'] + 1 if self.reID else 1)
-                occupancy_map = coo_matrix((v_s, (i_s, j_s)), shape=self.reducedgrid_shape)
-                self.map_gt[frame] = occupancy_map
+                        if single_pedestrian['views'][cam]['xmax'] > 0 and single_pedestrian['views'][cam]['ymax'] > 0:
+                            head_i_s[cam].append(y_head)
+                            head_j_s[cam].append(x)
+                            foot_i_s[cam].append(y_foot)
+                            foot_j_s[cam].append(x)
+                            pid_v_s[cam].append(single_pedestrian['personID'] + 1 if self.reID else 1)
+                occupancy_map = coo_matrix((v_s, (i_s, j_s)), shape=self.Rgrid_shape)
+                self.world_gt[frame] = occupancy_map
                 self.imgs_head_foot_gt[frame] = {}
                 for cam in range(self.num_cam):
-                    img_gt_head = coo_matrix((v_cam_s[cam], (head_row_cam_s[cam], head_col_cam_s[cam])),
+                    img_gt_head = coo_matrix((pid_v_s[cam], (head_i_s[cam], head_j_s[cam])),
                                              shape=self.img_shape)
-                    img_gt_foot = coo_matrix((v_cam_s[cam], (foot_row_cam_s[cam], foot_col_cam_s[cam])),
+                    img_gt_foot = coo_matrix((pid_v_s[cam], (foot_i_s[cam], foot_j_s[cam])),
                                              shape=self.img_shape)
                     self.imgs_head_foot_gt[frame][cam] = [img_gt_head, img_gt_foot]
 
     def __getitem__(self, index):
-        frame = list(self.map_gt.keys())[index]
+        frame = list(self.world_gt.keys())[index]
         imgs = []
         for cam in range(self.num_cam):
             fpath = self.img_fpaths[cam][frame]
@@ -131,11 +131,11 @@ class frameDataset(VisionDataset):
                 img = self.transform(img)
             imgs.append(img)
         imgs = torch.stack(imgs)
-        map_gt = self.map_gt[frame].toarray()
+        world_gt = self.world_gt[frame].toarray()
         if self.reID:
-            map_gt = (map_gt > 0).int()
+            world_gt = (world_gt > 0).int()
         if self.target_transform is not None:
-            map_gt = self.target_transform(map_gt)
+            world_gt = self.target_transform(world_gt)
         imgs_gt = []
         for cam in range(self.num_cam):
             img_gt_head = self.imgs_head_foot_gt[frame][cam][0].toarray()
@@ -146,10 +146,10 @@ class frameDataset(VisionDataset):
             if self.target_transform is not None:
                 img_gt = self.target_transform(img_gt)
             imgs_gt.append(img_gt.float())
-        return imgs, map_gt.float(), imgs_gt, frame
+        return imgs, world_gt.float(), imgs_gt, frame
 
     def __len__(self):
-        return len(self.map_gt.keys())
+        return len(self.world_gt.keys())
 
 
 def test():
