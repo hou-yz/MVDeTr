@@ -1,19 +1,37 @@
 import numpy as np
 
 
-def get_worldcoord_from_imagecoord(image_coord, intrinsic_mat, extrinsic_mat):
-    project_mat = intrinsic_mat @ extrinsic_mat
-    project_mat = np.linalg.inv(np.delete(project_mat, 2, 1))
-    image_coord = np.concatenate([image_coord, np.ones([1, image_coord.shape[1]])], axis=0)
-    world_coord = project_mat @ image_coord
-    world_coord = world_coord[:2, :] / world_coord[2, :]
-    return world_coord
+def project_2d_points(project_mat, input_points):
+    input_points = np.concatenate([input_points, np.ones([1, input_points.shape[1]])], axis=0)
+    output_points = project_mat @ input_points
+    output_points = output_points[:2, :] / output_points[2, :]
+    return output_points
 
 
-def get_imagecoord_from_worldcoord(world_coord, intrinsic_mat, extrinsic_mat):
-    project_mat = intrinsic_mat @ extrinsic_mat
-    project_mat = np.delete(project_mat, 2, 1)
-    world_coord = np.concatenate([world_coord, np.ones([1, world_coord.shape[1]])], axis=0)
-    image_coord = project_mat @ world_coord
-    image_coord = image_coord[:2, :] / image_coord[2, :]
-    return image_coord
+def get_worldcoord_from_imagecoord(image_coord, intrinsic_mat, extrinsic_mat, z=0):
+    project_mat = get_worldcoord_from_imgcoord_mat(intrinsic_mat, extrinsic_mat, z)
+    return project_2d_points(project_mat, image_coord)
+
+
+def get_imagecoord_from_worldcoord(world_coord, intrinsic_mat, extrinsic_mat, z=0):
+    project_mat = get_imgcoord_from_worldcoord_mat(intrinsic_mat, extrinsic_mat, z)
+    return project_2d_points(project_mat, world_coord)
+
+
+def get_imgcoord_from_worldcoord_mat(intrinsic_mat, extrinsic_mat, z=0):
+    """image of shape C,H,W (C,N_row,N_col); xy indexging; x,y (w,h) (n_col,n_row)
+    world of shape N_row, N_col; indexed as specified in the dataset attribute (xy or ij)
+    z in meters by default
+    """
+    threeD2twoD = np.array([[1, 0, 0], [0, 1, 0], [0, 0, z], [0, 0, 1]])
+    project_mat = intrinsic_mat @ extrinsic_mat @ threeD2twoD
+    return project_mat
+
+
+def get_worldcoord_from_imgcoord_mat(intrinsic_mat, extrinsic_mat, z=0):
+    """image of shape C,H,W (C,N_row,N_col); xy indexging; x,y (w,h) (n_col,n_row)
+    world of shape N_row, N_col; indexed as specified in the dataset attribute (xy or ij)
+    z in meters by default
+    """
+    project_mat = np.linalg.inv(get_imgcoord_from_worldcoord_mat(intrinsic_mat, extrinsic_mat, z))
+    return project_mat
