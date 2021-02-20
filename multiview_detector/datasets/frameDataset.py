@@ -11,18 +11,19 @@ from multiview_detector.utils.projection import *
 
 class frameDataset(VisionDataset):
     def __init__(self, base, train=True, transform=ToTensor(), target_transform=ToTensor(),
-                 reID=False, world_reduce=4, img_reduce=12, train_ratio=0.9, force_download=True):
+                 reID=False, world_reduce=4, img_reduce=12, world_kernel_size=20, img_kernel_size=10, train_ratio=0.9,
+                 force_download=True):
         super().__init__(base.root, transform=transform, target_transform=target_transform)
 
-        # world (grid) reduce: on top of the 2.5cm grid
-        world_sigma, world_kernel_size = 20 / world_reduce, 20
-        img_sigma, img_kernel_size = 10 / img_reduce, 10
-        self.reID, self.world_reduce, self.img_reduce = reID, world_reduce, img_reduce
-
         self.base = base
-        self.root, self.num_cam, self.num_frame = base.root, base.num_cam, base.num_frame
+        self.num_cam, self.num_frame = base.num_cam, base.num_frame
+        # world (grid) reduce: on top of the 2.5cm grid
+        self.reID, self.world_reduce, self.img_reduce = reID, world_reduce, img_reduce
         self.img_shape, self.worldgrid_shape = base.img_shape, base.worldgrid_shape  # H,W; N_row,N_col
+
         self.Rgrid_shape = list(map(lambda x: x // self.world_reduce, self.worldgrid_shape))
+        self.Rimg_shape = list(map(lambda x: x // self.img_reduce, self.img_shape))
+        world_sigma, img_sigma = world_kernel_size / self.world_reduce, img_kernel_size / self.img_reduce
 
         if train:
             frame_range = range(0, int(self.num_frame * train_ratio))
@@ -146,7 +147,8 @@ class frameDataset(VisionDataset):
             if self.target_transform is not None:
                 img_gt = self.target_transform(img_gt)
             imgs_gt.append(img_gt.float())
-        return imgs, world_gt.float(), imgs_gt, frame
+        imgs_gt = torch.stack(imgs_gt)
+        return imgs, world_gt.float(), imgs_gt.float(), frame
 
     def __len__(self):
         return len(self.world_gt.keys())
