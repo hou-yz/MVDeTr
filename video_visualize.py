@@ -29,14 +29,14 @@ def test(dataset_name='multiviewx'):
                                T.Compose([T.Resize([270, 480]), T.ToTensor(), ]))
     else:
         raise Exception('must choose from [wildtrack, multiviewx]')
-    grid_size = list(map(lambda x: x * 3, dataset.Rgrid_shape))
+    grid_size = list(map(lambda x: x * 3, dataset.Rworld_shape))
     bbox_by_pos_cam = dataset.base.read_pom()
     results = np.loadtxt(result_fpath)
 
     video = cv2.VideoWriter(f'{dataset_name}_test.avi', cv2.VideoWriter_fourcc(*"MJPG"), 2, (1580, 1060))
     for index in tqdm.tqdm(range(len(dataset))):
         img_comb = np.zeros([1060, 1580, 3]).astype('uint8')
-        map_res = np.zeros(dataset.Rgrid_shape)
+        map_res = np.zeros(dataset.Rworld_shape)
         imgs, map_gt, imgs_gt, frame = dataset.__getitem__(index)
         res_map_grid = results[results[:, 0] == frame, 1:]
         for ij in res_map_grid:
