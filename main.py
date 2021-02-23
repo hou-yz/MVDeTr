@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from torch.cuda.amp import GradScaler
 from torch import optim
+from torch.utils.data import DataLoader
 import torchvision.transforms as T
 from multiview_detector.datasets import *
 from multiview_detector.models.persp_trans_detector import PerspTransDetector
@@ -64,33 +65,15 @@ def main(args):
                             img_reduce=args.img_reduce, world_kernel_size=args.world_kernel_size,
                             img_kernel_size=args.img_kernel_size)
 
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True,
-                                               num_workers=args.num_workers, pin_memory=True)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size=args.batch_size, shuffle=False,
-                                              num_workers=args.num_workers, pin_memory=True)
-
-    # model
-    model = PerspTransDetector(train_set, args.arch, reduction=args.reduction)
-
-    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-    # optimizer = optim.SGD([{'params': model.base_pt1.parameters(), 'lr': args.lr * 0.1},
-    #                        {'params': model.base_pt2.parameters(), 'lr': args.lr * 0.1},
-    #                        {'params': model.img_classifier.parameters()},
-    #                        {'params': model.world_classifier.parameters()}],
-    #                       lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)  #
-    scaler = GradScaler()
-
-    # warm_up_with_cosine_lr
-    # warm_up_epochs = args.epochs//10
-    # warm_up_with_cosine_lr = lambda epoch: (epoch + 1) / warm_up_epochs if epoch < warm_up_epochs \
-    #     else 0.5 * (math.cos((epoch - warm_up_epochs) / (config["max_num_epochs"] - warm_up_epochs) * math.pi) + 1)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=len(train_loader),
-                                                    epochs=args.epochs)
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, args.epochs)
+    train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
+                              pin_memory=True)
+    test_loader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers,
+                             pin_memory=True)
 
     # logging
     if args.resume is None:
-        logdir = f'logs/{args.dataset}/{"debug_" if is_debug else ""}reduction{args.reduction}_' \
+        logdir = f'logs/{args.dataset}/{"debug_" if is_debug else ""}bottleneck{args.bottleneck_dim}_' \
+                 f'outfeat{args.outfeat_dim}_reduction{args.reduction}_alpha{args.alpha}' \
                  f'worldR{args.world_reduce}_imgR{args.img_reduce}_' \
                  f'worldK{args.world_kernel_size}_imgK{args.img_kernel_size}_' \
                  f'{datetime.datetime.today():%Y-%m-%d_%H-%M-%S}'
@@ -107,12 +90,21 @@ def main(args):
     print('Settings:')
     print(vars(args))
 
+    # model
+    model = PerspTransDetector(train_set, args.arch, reduction=args.reduction, bottleneck_dim=args.bottleneck_dim,
+                               outfeat_dim=args.outfeat_dim)
+
+    # optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    scaler = GradScaler()
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, args.epochs)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=len(train_loader),
+                                                    epochs=args.epochs)
+
     # draw curve
     x_epoch = []
     train_loss_s = []
-    train_prec_s = []
     test_loss_s = []
-    test_prec_s = []
     test_moda_s = []
 
     trainer = PerspectiveTrainer(model, logdir, denormalize, args.cls_thres, args.alpha)
@@ -125,39 +117,36 @@ def main(args):
 
         for epoch in tqdm.tqdm(range(1, args.epochs + 1)):
             print('Training...')
-            train_loss, train_prec = trainer.train(epoch, train_loader, optimizer, scaler, scheduler)
+            train_loss = trainer.train(epoch, train_loader, optimizer, scaler, scheduler)
             print('Testing...')
-            test_loss, test_prec, moda = trainer.test(test_loader, res_fpath)
+            test_loss, moda = trainer.test(test_loader, res_fpath)
 
             x_epoch.append(epoch)
             train_loss_s.append(train_loss)
-            train_prec_s.append(train_prec)
             test_loss_s.append(test_loss)
-            test_prec_s.append(test_prec)
             test_moda_s.append(moda)
-            draw_curve(os.path.join(logdir, 'learning_curve.jpg'), x_epoch, train_loss_s, train_prec_s,
-                       test_loss_s, test_prec_s, test_moda_s)
+            draw_curve(os.path.join(logdir, 'learning_curve.jpg'), x_epoch, train_loss_s, test_loss_s, test_moda_s)
             # save
             torch.save(model.state_dict(), os.path.join(logdir, 'MultiviewDetector.pth'))
     else:
         model.load_state_dict(torch.load(f'logs/{args.dataset}/{args.resume}/MultiviewDetector.pth'))
         model.eval()
     print('Test loaded model...')
-    trainer.test(test_loader, res_fpath)
+    trainer.test(test_loader, res_fpath, visualize=True)
 
 
 if __name__ == '__main__':
     # settings
     parser = argparse.ArgumentParser(description='Multiview detector')
     parser.add_argument('--reID', action='store_true')
-    parser.add_argument('--cls_thres', type=float, default=0.4)
+    parser.add_argument('--cls_thres', type=float, default=0.6)
     parser.add_argument('--alpha', type=float, default=1.0, help='ratio for per view loss')
     parser.add_argument('--arch', type=str, default='resnet18', choices=['vgg11', 'resnet18', 'mobilenet'])
     parser.add_argument('-d', '--dataset', type=str, default='wildtrack', choices=['wildtrack', 'multiviewx'])
     parser.add_argument('-j', '--num_workers', type=int, default=4)
     parser.add_argument('-b', '--batch_size', type=int, default=1, help='input batch size for training (default: 1)')
     parser.add_argument('--epochs', type=int, default=10, help='number of epochs to train (default: 10)')
-    parser.add_argument('--lr', type=float, default=0.1, help='learning rate')
+    parser.add_argument('--lr', type=float, default=1e-2, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=5e-4)
     parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum (default: 0.9)')
     parser.add_argument('--resume', type=str, default=None)
@@ -165,6 +154,8 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=2021, help='random seed (default: None)')
     parser.add_argument('--deterministic', type=str2bool, default=False)
 
+    parser.add_argument('--bottleneck_dim', type=int, default=128)
+    parser.add_argument('--outfeat_dim', type=int, default=0)
     parser.add_argument('--world_reduce', type=int, default=4)
     parser.add_argument('--img_reduce', type=int, default=12)
     parser.add_argument('--world_kernel_size', type=int, default=20)
