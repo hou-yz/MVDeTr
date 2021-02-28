@@ -118,8 +118,8 @@ class PerspectiveTrainer(BaseTrainer):
 
                 for b in range(B):
                     ids = scores[b].squeeze() > self.cls_thres
-                    pos, s = positions[b, ids], scores[b, ids]
-                    ids, count = nms(pos, s.squeeze(), 20, np.inf)
+                    pos, s = positions[b, ids], scores[b, ids, 0]
+                    ids, count = nms(pos, s, 20, np.inf)
                     res = torch.cat([torch.ones([count, 1]) * frame[b], pos[ids[:count]]], dim=1)
                     res_list.append(res)
 
