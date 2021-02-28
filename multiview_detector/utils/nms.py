@@ -16,9 +16,10 @@ def nms(points, scores, dist_thres=50 / 2.5, top_k=50):
         The indices of the kept boxes with respect to num_priors.
     """
 
+    assert points.shape[0] == scores.shape[0], 'make sure same points and scores have the same size'
     keep = torch.zeros_like(scores).long()
     if points.numel() == 0:
-        return keep
+        return keep, 0
     v, indices = scores.sort(0)  # sort in ascending order
     # I = I[v >= 0.01]
     top_k = min(top_k, len(indices))

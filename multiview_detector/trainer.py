@@ -8,7 +8,7 @@ from PIL import Image
 from multiview_detector.loss.gaussian_mse import GaussianMSE
 from multiview_detector.loss.losses import *
 from multiview_detector.evaluation.evaluate import evaluate
-from multiview_detector.utils.decode import ctdet_decode
+from multiview_detector.utils.decode import ctdet_decode, mvdet_decode
 from multiview_detector.utils.nms import nms
 from multiview_detector.utils.meters import AverageMeter
 from multiview_detector.utils.image_utils import add_heatmap_to_image
@@ -30,7 +30,7 @@ class PerspectiveTrainer(BaseTrainer):
         self.denormalize = denormalize
         self.alpha = alpha
 
-    def train(self, epoch, dataloader, optimizer, scaler, cyclic_scheduler=None, log_interval=100):
+    def train(self, epoch, dataloader, optimizer, scaler, scheduler=None, log_interval=100):
         self.model.train()
         losses = 0
         t0 = time.time()
@@ -67,11 +67,12 @@ class PerspectiveTrainer(BaseTrainer):
             t_b = time.time()
             t_backward += t_b - t_f
 
-            if cyclic_scheduler is not None:
-                if isinstance(cyclic_scheduler, torch.optim.lr_scheduler.OneCycleLR):
-                    cyclic_scheduler.step()
-                elif isinstance(cyclic_scheduler, torch.optim.lr_scheduler.CosineAnnealingWarmRestarts):
-                    cyclic_scheduler.step(epoch - 1 + batch_idx / len(dataloader))
+            if scheduler is not None:
+                if isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+                    scheduler.step()
+                elif isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingWarmRestarts) or \
+                        isinstance(scheduler, torch.optim.lr_scheduler.LambdaLR):
+                    scheduler.step(epoch - 1 + batch_idx / len(dataloader))
             if (batch_idx + 1) % log_interval == 0 or batch_idx + 1 == len(dataloader):
                 # print(cyclic_scheduler.last_epoch, optimizer.param_groups[0]['lr'])
                 t1 = time.time()
@@ -105,18 +106,22 @@ class PerspectiveTrainer(BaseTrainer):
             losses += loss.item()
 
             if res_fpath is not None:
-                xysc = ctdet_decode(world_heatmap.detach().cpu(), world_offset.detach().cpu(),
-                                    reduce=dataloader.dataset.world_reduce, )
-                grid_xy, scores = xysc[:, :, :2], xysc[:, :, 2].view([B, -1, 1])
+                # xysc = ctdet_decode(world_heatmap.detach().cpu(), world_offset.detach().cpu(),
+                #                     reduce=dataloader.dataset.world_reduce, )
+                xys = mvdet_decode(world_heatmap.detach().cpu(), world_offset.detach().cpu(),
+                                   reduce=dataloader.dataset.world_reduce)
+                grid_xy, scores = xys[:, :, :2], xys[:, :, 2:3]
                 if dataloader.dataset.base.indexing == 'xy':
                     positions = grid_xy
                 else:
                     positions = grid_xy[:, :, [1, 0]]
 
-                # ids, count = nms(positions, scores, 20, np.inf)
-                all_res = torch.cat([torch.ones_like(scores) * frame.view([B, 1, 1]), positions, scores],
-                                    dim=2).view([-1, 4])
-                res_list.append(all_res[all_res[:, 3] > self.cls_thres, :3])
+                for b in range(B):
+                    ids = scores[b].squeeze() > self.cls_thres
+                    pos, s = positions[b, ids], scores[b, ids]
+                    ids, count = nms(pos, s.squeeze(), 20, np.inf)
+                    res = torch.cat([torch.ones([count, 1]) * frame[b], pos[ids[:count]]], dim=1)
+                    res_list.append(res)
 
         t1 = time.time()
         t_epoch = t1 - t0

@@ -40,8 +40,7 @@ def _topk(scores, top_K):
 
     topk_score, topk_ind = torch.topk(topk_scores.view(batch, -1), top_K)
     topk_clses = (topk_ind / top_K).int()
-    topk_inds = _gather_feat(
-        topk_inds.view(batch, -1, 1), topk_ind).view(batch, top_K)
+    topk_inds = _gather_feat(topk_inds.view(batch, -1, 1), topk_ind).view(batch, top_K)
     topk_ys = _gather_feat(topk_ys.view(batch, -1, 1), topk_ind).view(batch, top_K)
     topk_xs = _gather_feat(topk_xs.view(batch, -1, 1), topk_ind).view(batch, top_K)
 
@@ -53,7 +52,7 @@ def ctdet_decode(heatmap, offset=None, wh=None, reduce=4, top_K=100):
 
     scoremap = torch.sigmoid(heatmap)
     # perform nms on heatmaps
-    scoremap = _nms(scoremap, 20 // reduce)
+    scoremap = _nms(scoremap, )  # 10 // reduce * 2 + 1
 
     scores, inds, clses, ys, xs = _topk(scoremap, top_K=top_K)
     xy = torch.stack([xs, ys], dim=2)
@@ -76,3 +75,19 @@ def ctdet_decode(heatmap, offset=None, wh=None, reduce=4, top_K=100):
         detections = torch.cat([xy, wh, scores, clses], dim=2)
 
     return detections
+
+
+def mvdet_decode(heatmap, offset=None, reduce=4):
+    B, C, H, W = heatmap.shape
+    scoremap = torch.sigmoid(heatmap)
+
+    xy = torch.nonzero(torch.ones_like(scoremap[:, 0])).view([B, H * W, 3])[:, :, [2, 1]].float()
+    if offset is not None:
+        offset = offset.permute(0, 2, 3, 1).reshape(B, H * W, 2)
+        xy = xy + offset
+    else:
+        xy = xy + 0.5
+    xy *= reduce
+    scores = scoremap.permute(0, 2, 3, 1).reshape(B, H * W, 1)
+
+    return torch.cat([xy, scores], dim=2)
