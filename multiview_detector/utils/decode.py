@@ -77,9 +77,8 @@ def ctdet_decode(heatmap, offset=None, wh=None, reduce=4, top_K=100):
     return detections
 
 
-def mvdet_decode(heatmap, offset=None, reduce=4):
-    B, C, H, W = heatmap.shape
-    scoremap = torch.sigmoid(heatmap)
+def mvdet_decode(scoremap, offset=None, reduce=4):
+    B, C, H, W = scoremap.shape
 
     xy = torch.nonzero(torch.ones_like(scoremap[:, 0])).view([B, H * W, 3])[:, :, [2, 1]].float()
     if offset is not None:

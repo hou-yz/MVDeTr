@@ -23,6 +23,7 @@ class PerspectiveTrainer(BaseTrainer):
     def __init__(self, model, logdir, denormalize, cls_thres=0.4, alpha=1.0):
         super(BaseTrainer, self).__init__()
         self.model = model
+        self.mse_loss = nn.MSELoss()
         self.focal_loss = FocalLoss()
         self.regress_loss = RegL1Loss()
         self.cls_thres = cls_thres
@@ -50,6 +51,7 @@ class PerspectiveTrainer(BaseTrainer):
             w_loss = loss_w_hm + loss_w_off
             img_loss = loss_img_hm + loss_img_off + loss_img_wh * 0.1
             loss = w_loss + img_loss / N * self.alpha
+            # loss = self.mse_loss(world_heatmap, world_gt['heatmap'].to(world_heatmap.device))
 
             t_f = time.time()
             t_forward += t_f - t_b
@@ -77,9 +79,8 @@ class PerspectiveTrainer(BaseTrainer):
                 # print(cyclic_scheduler.last_epoch, optimizer.param_groups[0]['lr'])
                 t1 = time.time()
                 t_epoch = t1 - t0
-                print(
-                    f'Train Epoch: {epoch}, Batch:{(batch_idx + 1)}, loss: {losses / (batch_idx + 1):.6f}, Time: {t_epoch:.1f} '
-                    f'(f{t_forward / (batch_idx + 1):.3f}+b{t_backward / (batch_idx + 1):.3f}), maxima: {world_heatmap.max():.3f}')
+                print(f'Train Epoch: {epoch}, Batch:{(batch_idx + 1)}, loss: {losses / (batch_idx + 1):.6f}, '
+                      f'Time: {t_epoch:.1f}, maxima: {world_heatmap.max():.3f}')
                 pass
         return losses / len(dataloader)
 
@@ -102,14 +103,14 @@ class PerspectiveTrainer(BaseTrainer):
                 w_loss = loss_w_hm + loss_w_off
                 img_loss = loss_img_hm + loss_img_off + loss_img_wh * 0.1
                 loss = w_loss + img_loss / N * self.alpha
+            # loss = self.mse_loss(world_heatmap, world_gt['heatmap'].to(world_heatmap.device))
 
             losses += loss.item()
 
             if res_fpath is not None:
-                # xysc = ctdet_decode(world_heatmap.detach().cpu(), world_offset.detach().cpu(),
-                #                     reduce=dataloader.dataset.world_reduce, )
-                xys = mvdet_decode(world_heatmap.detach().cpu(), world_offset.detach().cpu(),
+                xys = mvdet_decode(torch.sigmoid(world_heatmap.detach().cpu()), world_offset.detach().cpu(),
                                    reduce=dataloader.dataset.world_reduce)
+                # xys = mvdet_decode(world_heatmap.detach().cpu(), reduce=dataloader.dataset.world_reduce)
                 grid_xy, scores = xys[:, :, :2], xys[:, :, 2:3]
                 if dataloader.dataset.base.indexing == 'xy':
                     positions = grid_xy

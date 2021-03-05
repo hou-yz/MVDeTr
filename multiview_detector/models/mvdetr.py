@@ -8,7 +8,7 @@ import kornia
 from multiview_detector.models.resnet import resnet18
 from multiview_detector.utils.projection import get_worldcoord_from_imgcoord_mat
 from multiview_detector.models.conv_world_feat import ConvWorldFeat, DeformConvWorldFeat
-from multiview_detector.models.trans_world_feat import TransformerWorldFeat
+from multiview_detector.models.trans_world_feat import TransformerWorldFeat, DeformTransWorldFeat
 
 import matplotlib.pyplot as plt
 
@@ -29,9 +29,9 @@ def output_head(in_dim, feat_dim, out_dim):
     return fc
 
 
-class PerspTransDetector(nn.Module):
-    def __init__(self, dataset, arch='resnet18', z=0, world_feat_arch='conv', reduction=None, use_multicam=False,
-                 bottleneck_dim=128, hidden_dim=256, outfeat_dim=0, ):
+class MVDeTr(nn.Module):
+    def __init__(self, dataset, arch='resnet18', z=0, world_feat_arch='conv', reduction=None,
+                 bottleneck_dim=128, hidden_dim=128, outfeat_dim=0, ):
         super().__init__()
         self.Rimg_shape, self.Rworld_shape = dataset.Rimg_shape, dataset.Rworld_shape
 
@@ -85,11 +85,12 @@ class PerspTransDetector(nn.Module):
             self.world_feat = ConvWorldFeat(dataset.num_cam, dataset.Rworld_shape,
                                             base_dim, hidden_dim, reduction).to('cuda:0')
         elif world_feat_arch == 'trans':
-            self.world_feat = TransformerWorldFeat(dataset.num_cam, dataset.Rworld_shape,
-                                                   base_dim, use_multicam, hidden_dim=hidden_dim).to('cuda:0')
+            self.world_feat = TransformerWorldFeat(dataset.num_cam, dataset.Rworld_shape, base_dim).to('cuda:0')
         elif world_feat_arch == 'deform_conv':
             self.world_feat = DeformConvWorldFeat(dataset.num_cam, dataset.Rworld_shape,
                                                   base_dim, hidden_dim).to('cuda:0')
+        elif world_feat_arch == 'deform_trans':
+            self.world_feat = DeformTransWorldFeat(dataset.num_cam, dataset.Rworld_shape, base_dim).to('cuda:0')
         else:
             raise Exception
 
@@ -157,7 +158,7 @@ def test():
                            img_reduce=16)
     dataloader = DataLoader(dataset, 1, False, num_workers=0)
     imgs, world_gt, imgs_gt, frame = next(iter(dataloader))
-    model = PerspTransDetector(dataset, arch='resnet18', world_feat_arch='trans')
+    model = MVDeTr(dataset, arch='resnet18', world_feat_arch='trans')
     (world_heatmap, world_offset), (imgs_heatmap, imgs_offset, imgs_wh) = model(imgs, visualize=True)
     xysc = ctdet_decode(world_heatmap, world_offset)
     pass

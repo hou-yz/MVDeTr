@@ -42,7 +42,7 @@ def get_gt(Rshape, x_s, y_s, w_s=None, h_s=None, v_s=None, reduce=4, top_k=100, 
 
 class frameDataset(VisionDataset):
     def __init__(self, base, train=True, transform=ToTensor(), target_transform=None, reID=False,
-                 world_reduce=4, img_reduce=12, world_kernel_size=10, img_kernel_size=10,
+                 world_reduce=4, img_reduce=12, world_kernel_size=20, img_kernel_size=10,
                  train_ratio=0.9, top_k=100, force_download=True):
         super().__init__(base.root, transform=transform, target_transform=target_transform)
 
@@ -163,9 +163,19 @@ class frameDataset(VisionDataset):
 def test(test_proection=False):
     from torch.utils.data import DataLoader
     from multiview_detector.datasets.Wildtrack import Wildtrack
-    # from multiview_detector.datasets.MultiviewX import MultiviewX
+    from multiview_detector.datasets.MultiviewX import MultiviewX
 
-    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')))
+    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=False)
+    dataset = frameDataset(MultiviewX(os.path.expanduser('~/Data/MultiviewX')), train=False)
+    min_dist = np.inf
+    for world_gt in dataset.world_gt.values():
+        x, y = np.array(world_gt[0]), np.array(world_gt[1])
+        x_dists = np.abs(x - x[:, None])
+        y_dists = np.abs(y - y[:, None])
+        xy_dists = (x_dists ** 2 + y_dists ** 2) ** 0.5
+        np.fill_diagonal(xy_dists, np.inf)
+        min_dist = min(min_dist, np.min(xy_dists))
+        pass
     dataloader = DataLoader(dataset, 2, False, num_workers=0)
     imgs, world_gt, imgs_gt, frame = next(iter(dataloader))
 
