@@ -31,7 +31,7 @@ def output_head(in_dim, feat_dim, out_dim):
 
 class MVDeTr(nn.Module):
     def __init__(self, dataset, arch='resnet18', z=0, world_feat_arch='conv', reduction=None,
-                 bottleneck_dim=128, hidden_dim=128, outfeat_dim=0, ):
+                 bottleneck_dim=128, hidden_dim=128, outfeat_dim=0, droupout=0.5):
         super().__init__()
         self.Rimg_shape, self.Rworld_shape = dataset.Rimg_shape, dataset.Rworld_shape
 
@@ -70,7 +70,8 @@ class MVDeTr(nn.Module):
         self.base = base.to(self.use_cuda1)
 
         if bottleneck_dim:
-            self.bottleneck = nn.Conv2d(base_dim, bottleneck_dim, 1).to(self.use_cuda1)
+            self.bottleneck = nn.Sequential(nn.Conv2d(base_dim, bottleneck_dim, 1),
+                                            nn.Dropout2d(droupout)).to(self.use_cuda1)
             base_dim = bottleneck_dim
         else:
             self.bottleneck = nn.Identity()
@@ -125,7 +126,7 @@ class MVDeTr(nn.Module):
         # world feat
         H, W = self.Rworld_shape
         world_feat = kornia.warp_perspective(imgs_feat, self.proj_mats.repeat(B, 1, 1, 1).view(B * N, 3, 3).float(),
-                                             self.Rworld_shape).view(B, N, C, H, W)
+                                             self.Rworld_shape, align_corners=False).view(B, N, C, H, W)
         if visualize:
             for cam in range(N):
                 plt.imshow(torch.norm(world_feat[0, cam].detach(), dim=0).cpu().numpy())
