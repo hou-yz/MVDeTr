@@ -1,10 +1,10 @@
 import os
 import json
-from scipy.stats import multivariate_normal
 from PIL import Image
-from scipy.sparse import coo_matrix
+import kornia
 from torchvision.datasets import VisionDataset
 import torch
+import torch.nn.functional as F
 from torchvision.transforms import ToTensor
 from multiview_detector.utils.projection import *
 from multiview_detector.utils.gaussian import draw_umich_gaussian
@@ -55,12 +55,14 @@ class frameDataset(VisionDataset):
         self.world_kernel_size, self.img_kernel_size = world_kernel_size, img_kernel_size
 
         self.Rworld_shape = list(map(lambda x: x // self.world_reduce, self.worldgrid_shape))
-        self.Rimg_shape = list(map(lambda x: x // self.img_reduce, self.img_shape))
+        self.Rimg_shape = np.ceil(np.array(self.img_shape) / self.img_reduce).astype(int).tolist()
 
         if train:
             frame_range = range(0, int(self.num_frame * train_ratio))
         else:
             frame_range = range(int(self.num_frame * train_ratio), self.num_frame)
+
+        self.imgs_mask = self.get_imgs_mask()
 
         self.img_fpaths = self.base.get_image_fpaths(frame_range)
         self.world_gt = {}
@@ -84,14 +86,13 @@ class frameDataset(VisionDataset):
                         world_y_s.append(grid_x)
                     world_pid_s.append(pedestrian['personID'] + 1)
                     for cam in range(self.num_cam):
-                        x_foot = max(min((pedestrian['views'][cam]['xmin'] + pedestrian['views'][cam]['xmax']) // 2,
-                                         self.img_shape[1] - 1), 0)
+                        x_foot = min((pedestrian['views'][cam]['xmin'] + pedestrian['views'][cam]['xmax']) // 2,
+                                     self.img_shape[1] - 1)
                         y_foot = min(pedestrian['views'][cam]['ymax'], self.img_shape[0] - 1)
                         height = max(pedestrian['views'][cam]['ymax'] - pedestrian['views'][cam]['ymin'], 0)
                         width = max(pedestrian['views'][cam]['xmax'] - pedestrian['views'][cam]['xmin'], 0)
-                        if pedestrian['views'][cam]['xmax'] > 0 and pedestrian['views'][cam]['ymax'] > 0:
-                            # and pedestrian['views'][cam]['xmin'] < self.img_shape[1] and \
-                            #     pedestrian['views'][cam]['ymin'] < self.img_shape[0]:
+                        if pedestrian['views'][cam]['xmax'] > 0 and pedestrian['views'][cam]['ymax'] > 0 and \
+                                self.imgs_mask[cam, 0, y_foot, x_foot]:
                             img_x_s[cam].append(x_foot)
                             img_y_s[cam].append(y_foot)
                             img_w_s[cam].append(width)
@@ -109,6 +110,27 @@ class frameDataset(VisionDataset):
             self.prepare_gt()
 
         pass
+
+    def get_imgs_mask(self, z=0):
+        # image and world feature maps from xy indexing, change them into world indexing / xy indexing (img)
+        # world grid change to xy indexing
+        Rworldgrid_from_worldcoord_mat = np.linalg.inv(self.base.worldcoord_from_worldgrid_mat @
+                                                       self.base.world_indexing_from_xy_mat)
+
+        # z in meters by default
+        # projection matrices: img feat -> world feat
+        worldcoord_from_imgcoord_mats = [get_worldcoord_from_imgcoord_mat(self.base.intrinsic_matrices[cam],
+                                                                          self.base.extrinsic_matrices[cam],
+                                                                          z / self.base.worldcoord_unit)
+                                         for cam in range(self.num_cam)]
+        # worldgrid(xy)_from_imggrid(xy)
+        proj_mats = [Rworldgrid_from_worldcoord_mat @ worldcoord_from_imgcoord_mats[cam] @ self.base.img_xy_from_xy_mat
+                     for cam in range(self.num_cam)]
+        # imggrid(xy)_from_worldgrid(xy)
+        proj_mats = torch.tensor(np.stack([np.linalg.inv(proj_mat) for proj_mat in proj_mats]))
+        world_mask = torch.ones([self.num_cam, 1] + list(self.worldgrid_shape))
+        imgs_mask = kornia.warp_perspective(world_mask, proj_mats.float(), self.img_shape, flags='nearest')
+        return imgs_mask
 
     def prepare_gt(self):
         og_gt = []
@@ -154,6 +176,8 @@ class frameDataset(VisionDataset):
                 imgs_gt[key].append(img_gt[key])
         for key in imgs_gt.keys():
             imgs_gt[key] = torch.stack(imgs_gt[key])
+        imgs_gt['imgs_mask'] = F.interpolate(self.imgs_mask, self.Rimg_shape, mode='bilinear',
+                                             align_corners=False).bool().float()
         return imgs, world_gt, imgs_gt, frame
 
     def __len__(self):

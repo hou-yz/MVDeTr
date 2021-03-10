@@ -20,15 +20,18 @@ class FocalLoss(nn.Module):
     def __init__(self):
         super(FocalLoss, self).__init__()
 
-    def forward(self, output, target):
+    def forward(self, output, target, mask=None):
         ''' Modified focal loss. Exactly the same as CornerNet.
             Runs faster and costs a little bit more memory
           Arguments:
             output (batch x c x h x w)
             target (batch x c x h x w)
         '''
+        if mask is None:
+            mask = torch.ones_like(target)
         output = _sigmoid(output)
         target = target.to(output.device)
+        mask = mask.to(output.device)
         pos_inds = target.eq(1).float()
         neg_inds = target.lt(1).float()
 
@@ -37,9 +40,9 @@ class FocalLoss(nn.Module):
         pos_loss = torch.log(output) * torch.pow(1 - output, 2) * pos_inds
         neg_loss = torch.log(1 - output) * torch.pow(output, 2) * neg_weights * neg_inds
 
-        num_pos = pos_inds.float().sum()
-        pos_loss = pos_loss.sum()
-        neg_loss = neg_loss.sum()
+        num_pos = (pos_inds.float() * mask).sum()
+        pos_loss = (pos_loss * mask).sum()
+        neg_loss = (neg_loss * mask).sum()
 
         if num_pos == 0:
             loss = -neg_loss

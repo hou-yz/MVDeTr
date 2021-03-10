@@ -2,11 +2,11 @@ import time
 import os
 import numpy as np
 import torch
+from torch import nn
 from torch.cuda.amp import autocast
 import matplotlib.pyplot as plt
 from PIL import Image
-from multiview_detector.loss.gaussian_mse import GaussianMSE
-from multiview_detector.loss.losses import *
+from multiview_detector.loss import *
 from multiview_detector.evaluation.evaluate import evaluate
 from multiview_detector.utils.decode import ctdet_decode, mvdet_decode
 from multiview_detector.utils.nms import nms
@@ -20,7 +20,7 @@ class BaseTrainer(object):
 
 
 class PerspectiveTrainer(BaseTrainer):
-    def __init__(self, model, logdir, denormalize, cls_thres=0.4, alpha=1.0):
+    def __init__(self, model, logdir, denormalize, cls_thres=0.4, alpha=1.0, use_mse=False):
         super(BaseTrainer, self).__init__()
         self.model = model
         self.mse_loss = nn.MSELoss()
@@ -30,6 +30,7 @@ class PerspectiveTrainer(BaseTrainer):
         self.logdir = logdir
         self.denormalize = denormalize
         self.alpha = alpha
+        self.use_mse = use_mse
 
     def train(self, epoch, dataloader, optimizer, scaler, scheduler=None, log_interval=100):
         self.model.train()
@@ -39,19 +40,23 @@ class PerspectiveTrainer(BaseTrainer):
         t_forward = 0
         t_backward = 0
         for batch_idx, (data, world_gt, imgs_gt, _) in enumerate(dataloader):
+            B, N = imgs_gt['heatmap'].shape[:2]
+            for key in imgs_gt.keys():
+                imgs_gt[key] = imgs_gt[key].view([B * N] + list(imgs_gt[key].shape)[2:])
             # with autocast():
             (world_heatmap, world_offset), (imgs_heatmap, imgs_offset, imgs_wh) = self.model(data)
-            B, N, K = imgs_gt['reg_mask'].shape
             loss_w_hm = self.focal_loss(world_heatmap, world_gt['heatmap'])
             loss_w_off = self.regress_loss(world_offset, world_gt['reg_mask'], world_gt['idx'], world_gt['offset'])
-            loss_img_hm = self.focal_loss(imgs_heatmap, imgs_gt['heatmap'])
+            loss_img_hm = self.focal_loss(imgs_heatmap, imgs_gt['heatmap'], imgs_gt['imgs_mask'])
             loss_img_off = self.regress_loss(imgs_offset, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['offset'])
             loss_img_wh = self.regress_loss(imgs_wh, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['wh'])
 
             w_loss = loss_w_hm + loss_w_off
             img_loss = loss_img_hm + loss_img_off + loss_img_wh * 0.1
             loss = w_loss + img_loss / N * self.alpha
-            # loss = self.mse_loss(world_heatmap, world_gt['heatmap'].to(world_heatmap.device))
+            if self.use_mse:
+                loss = self.mse_loss(world_heatmap, world_gt['heatmap'].to(world_heatmap.device)) + \
+                       self.alpha * self.mse_loss(imgs_heatmap, imgs_gt['heatmap'].to(imgs_heatmap.device))
 
             t_f = time.time()
             t_forward += t_f - t_b
@@ -84,26 +89,30 @@ class PerspectiveTrainer(BaseTrainer):
                 pass
         return losses / len(dataloader)
 
-    def test(self, dataloader, res_fpath=None, visualize=False):
+    def test(self, epoch, dataloader, res_fpath=None, visualize=False):
         self.model.eval()
         losses = 0
         res_list = []
         t0 = time.time()
         for batch_idx, (data, world_gt, imgs_gt, frame) in enumerate(dataloader):
+            B, N = imgs_gt['heatmap'].shape[:2]
+            for key in imgs_gt.keys():
+                imgs_gt[key] = imgs_gt[key].view([B * N] + list(imgs_gt[key].shape)[2:])
             # with autocast():
             with torch.no_grad():
                 (world_heatmap, world_offset), (imgs_heatmap, imgs_offset, imgs_wh) = self.model(data)
-                B, N, K = imgs_gt['reg_mask'].shape
                 loss_w_hm = self.focal_loss(world_heatmap, world_gt['heatmap'])
                 loss_w_off = self.regress_loss(world_offset, world_gt['reg_mask'], world_gt['idx'], world_gt['offset'])
-                loss_img_hm = self.focal_loss(imgs_heatmap, imgs_gt['heatmap'])
+                loss_img_hm = self.focal_loss(imgs_heatmap, imgs_gt['heatmap'], imgs_gt['imgs_mask'])
                 loss_img_off = self.regress_loss(imgs_offset, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['offset'])
                 loss_img_wh = self.regress_loss(imgs_wh, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['wh'])
 
                 w_loss = loss_w_hm + loss_w_off
                 img_loss = loss_img_hm + loss_img_off + loss_img_wh * 0.1
                 loss = w_loss + img_loss / N * self.alpha
-            # loss = self.mse_loss(world_heatmap, world_gt['heatmap'].to(world_heatmap.device))
+                if self.use_mse:
+                    loss = self.mse_loss(world_heatmap, world_gt['heatmap'].to(world_heatmap.device)) + \
+                           self.alpha * self.mse_loss(imgs_heatmap, imgs_gt['heatmap'].to(imgs_heatmap.device))
 
             losses += loss.item()
 
@@ -134,7 +143,7 @@ class PerspectiveTrainer(BaseTrainer):
             subplt1 = fig.add_subplot(212, title="target")
             subplt0.imshow(world_heatmap.cpu().detach().numpy().squeeze())
             subplt1.imshow(world_gt['heatmap'].squeeze())
-            plt.savefig(os.path.join(self.logdir, 'world.jpg'))
+            plt.savefig(os.path.join(self.logdir, f'world{epoch if epoch else ""}.jpg'))
             plt.close(fig)
             # visualizing the heatmap for per-view estimation
             heatmap0_foot = imgs_heatmap[0].detach().cpu().numpy().squeeze()
