@@ -40,8 +40,8 @@ class FocalLoss(nn.Module):
         pos_loss = torch.log(output) * torch.pow(1 - output, 2) * pos_inds
         neg_loss = torch.log(1 - output) * torch.pow(output, 2) * neg_weights * neg_inds
 
-        num_pos = (pos_inds.float() * mask).sum()
-        pos_loss = (pos_loss * mask).sum()
+        num_pos = pos_inds.float().sum()
+        pos_loss = pos_loss.sum()
         neg_loss = (neg_loss * mask).sum()
 
         if num_pos == 0:
@@ -57,14 +57,23 @@ class RegL1Loss(nn.Module):
 
     def forward(self, output, mask, ind, target):
         mask, ind, target = mask.to(output.device), ind.to(output.device), target.to(output.device)
-        if len(mask.shape) == 3:
-            B, N, K, C = target.shape
-            mask = mask.view([B * N, K])
-            ind = ind.view([B * N, K])
-            target = target.view([B * N, K, C])
         pred = _transpose_and_gather_feat(output, ind)
         mask = mask.unsqueeze(2).expand_as(pred).float()
-        # loss = F.l1_loss(pred * mask, target * mask, reduction='elementwise_mean')
         loss = F.l1_loss(pred * mask, target * mask, reduction='sum')
         loss = loss / (mask.sum() + 1e-4)
+        return loss
+
+
+class RegCELoss(nn.Module):
+    def __init__(self):
+        super(RegCELoss, self).__init__()
+
+    def forward(self, output, mask, ind, target):
+        mask, ind, target = mask.to(output.device), ind.to(output.device), target.to(output.device)
+        pred = _transpose_and_gather_feat(output, ind)
+        if len(target[mask]) == 0:
+            loss = F.cross_entropy(pred[mask], target[mask], reduction='sum')
+            loss = loss / (mask.sum() + 1e-4)
+        else:
+            loss = 0
         return loss

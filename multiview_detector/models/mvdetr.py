@@ -80,6 +80,7 @@ class MVDeTr(nn.Module):
         self.img_heatmap = output_head(base_dim, outfeat_dim, 1).to('cuda:0')
         self.img_offset = output_head(base_dim, outfeat_dim, 2).to('cuda:0')
         self.img_wh = output_head(base_dim, outfeat_dim, 2).to('cuda:0')
+        self.img_id = output_head(base_dim, outfeat_dim, len(dataset.pid_dict)).to('cuda:0')
 
         # world feat
         if world_feat_arch == 'conv':
@@ -98,6 +99,7 @@ class MVDeTr(nn.Module):
         # world heads
         self.world_heatmap = output_head(hidden_dim, outfeat_dim, 1).to('cuda:0')
         self.world_offset = output_head(hidden_dim, outfeat_dim, 2).to('cuda:0')
+        self.world_id = output_head(hidden_dim, outfeat_dim, len(dataset.pid_dict)).to('cuda:0')
 
         # init
         self.img_heatmap[-1].bias.data.fill_(-2.19)
@@ -122,6 +124,7 @@ class MVDeTr(nn.Module):
         imgs_heatmap = self.img_heatmap(imgs_feat)
         imgs_offset = self.img_offset(imgs_feat)
         imgs_wh = self.img_wh(imgs_feat)
+        imgs_id = self.img_id(imgs_feat)
 
         # world feat
         H, W = self.Rworld_shape
@@ -136,13 +139,14 @@ class MVDeTr(nn.Module):
         # world heads
         world_heatmap = self.world_heatmap(world_feat)
         world_offset = self.world_offset(world_feat)
+        world_id = self.world_id(world_feat)
 
         if visualize:
             plt.imshow(torch.norm(world_feat[0].detach(), dim=0).cpu().numpy())
             plt.show()
             plt.imshow(torch.norm(world_heatmap[0].detach(), dim=0).cpu().numpy())
             plt.show()
-        return (world_heatmap, world_offset), (imgs_heatmap, imgs_offset, imgs_wh)
+        return (world_heatmap, world_offset, world_id), (imgs_heatmap, imgs_offset, imgs_wh, imgs_id)
 
 
 def test():
@@ -160,7 +164,7 @@ def test():
     dataloader = DataLoader(dataset, 1, False, num_workers=0)
     imgs, world_gt, imgs_gt, frame = next(iter(dataloader))
     model = MVDeTr(dataset, arch='resnet18', world_feat_arch='trans')
-    (world_heatmap, world_offset), (imgs_heatmap, imgs_offset, imgs_wh) = model(imgs, visualize=True)
+    (world_heatmap, world_offset, world_id), (imgs_heatmap, imgs_offset, imgs_wh, imgs_id) = model(imgs, visualize=True)
     xysc = ctdet_decode(world_heatmap, world_offset)
     pass
 

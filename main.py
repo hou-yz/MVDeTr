@@ -38,12 +38,14 @@ def main(args):
         random.seed(args.seed)
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
+        torch.cuda.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
 
     # deterministic
     if args.deterministic:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+        torch.autograd.set_detect_anomaly(True)
     else:
         torch.backends.cudnn.benchmark = True
 
@@ -59,7 +61,7 @@ def main(args):
         raise Exception('must choose from [wildtrack, multiviewx]')
     train_set = frameDataset(base, train=True, transform=trans, world_reduce=args.world_reduce,
                              img_reduce=args.img_reduce, world_kernel_size=args.world_kernel_size,
-                             img_kernel_size=args.img_kernel_size)
+                             img_kernel_size=args.img_kernel_size, semi_supervised=args.semi_supervised)
     test_set = frameDataset(base, train=False, transform=trans, world_reduce=args.world_reduce,
                             img_reduce=args.img_reduce, world_kernel_size=args.world_kernel_size,
                             img_kernel_size=args.img_kernel_size)
@@ -76,9 +78,9 @@ def main(args):
 
     # logging
     if args.resume is None:
-        logdir = f'logs/{args.dataset}/{"debug_" if is_debug else ""}' \
+        logdir = f'logs/{args.dataset}/{"debug_" if is_debug else ""}{"SS_" if args.semi_supervised else ""}' \
                  f'{args.world_feat}_bottleneck{args.bottleneck_dim}_' \
-                 f'mse{int(args.use_mse)}_alpha{args.alpha}_drop{args.dropout}_' \
+                 f'mse{int(args.use_mse)}_alpha{args.alpha}_drop{args.dropout}_id{args.id_ratio}_' \
                  f'worldR{args.world_reduce}_imgR{args.img_reduce}_' \
                  f'worldK{args.world_kernel_size}_imgK{args.img_kernel_size}_' \
                  f'{datetime.datetime.today():%Y-%m-%d_%H-%M-%S}'
@@ -111,7 +113,7 @@ def main(args):
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     scaler = GradScaler()
 
-    def warmup_lr_scheduler(epoch, warmup_epochs=2, step=args.epochs * 3 // 4):
+    def warmup_lr_scheduler(epoch, warmup_epochs=2, step=args.step_size):
         if epoch < warmup_epochs:
             return epoch / warmup_epochs
         else:
@@ -122,7 +124,7 @@ def main(args):
                                                     epochs=args.epochs)
     # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, warmup_lr_scheduler)
 
-    trainer = PerspectiveTrainer(model, logdir, denormalize, args.cls_thres, args.alpha, args.use_mse)
+    trainer = PerspectiveTrainer(model, logdir, denormalize, args.cls_thres, args.alpha, args.use_mse, args.id_ratio)
 
     # draw curve
     x_epoch = []
@@ -159,6 +161,8 @@ if __name__ == '__main__':
     # settings
     parser = argparse.ArgumentParser(description='Multiview detector')
     parser.add_argument('--reID', action='store_true')
+    parser.add_argument('--semi_supervised', type=str2bool, default=False)
+    parser.add_argument('--id_ratio', type=float, default=0)
     parser.add_argument('--cls_thres', type=float, default=0.6)
     parser.add_argument('--alpha', type=float, default=1.0, help='ratio for per view loss')
     parser.add_argument('--use_mse', type=str2bool, default=False)
@@ -168,13 +172,14 @@ if __name__ == '__main__':
     parser.add_argument('-b', '--batch_size', type=int, default=1, help='input batch size for training (default: 1)')
     parser.add_argument('--dropout', type=float, default=0.5)
     parser.add_argument('--epochs', type=int, default=10, help='number of epochs to train (default: 10)')
-    parser.add_argument('--lr', type=float, default=1e-2, help='learning rate')
+    parser.add_argument('--step_size', type=int, default=100)
+    parser.add_argument('--lr', type=float, default=5e-3, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=5e-4)
     parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum (default: 0.9)')
     parser.add_argument('--resume', type=str, default=None)
     parser.add_argument('--visualize', action='store_true')
     parser.add_argument('--seed', type=int, default=2021, help='random seed (default: None)')
-    parser.add_argument('--deterministic', type=str2bool, default=True)
+    parser.add_argument('--deterministic', type=str2bool, default=False)
 
     parser.add_argument('--world_feat', type=str, default='conv',
                         choices=['conv', 'trans', 'deform_conv', 'deform_trans'])

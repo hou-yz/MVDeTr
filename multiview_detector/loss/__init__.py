@@ -1,2 +1,2 @@
 from .gaussian_mse import GaussianMSE
-from .losses import FocalLoss, RegL1Loss
+from .losses import FocalLoss, RegL1Loss, RegCELoss
