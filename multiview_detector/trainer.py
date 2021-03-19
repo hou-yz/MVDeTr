@@ -41,11 +41,12 @@ class PerspectiveTrainer(BaseTrainer):
         t_b = time.time()
         t_forward = 0
         t_backward = 0
-        for batch_idx, (data, world_gt, imgs_gt, _) in enumerate(dataloader):
+        for batch_idx, (data, world_gt, imgs_gt, frame) in enumerate(dataloader):
             B, N = imgs_gt['heatmap'].shape[:2]
             for key in imgs_gt.keys():
                 imgs_gt[key] = imgs_gt[key].view([B * N] + list(imgs_gt[key].shape)[2:])
             # with autocast():
+            # supervised
             (world_heatmap, world_offset, world_id), (imgs_heatmap, imgs_offset, imgs_wh, imgs_id) = self.model(data)
             loss_w_hm = self.focal_loss(world_heatmap, world_gt['heatmap'], world_gt['heatmap_mask'])
             loss_w_off = self.regress_loss(world_offset, world_gt['reg_mask'], world_gt['idx'], world_gt['offset'])
@@ -54,6 +55,7 @@ class PerspectiveTrainer(BaseTrainer):
             loss_img_off = self.regress_loss(imgs_offset, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['offset'])
             loss_img_wh = self.regress_loss(imgs_wh, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['wh'])
             loss_img_id = self.ce_loss(imgs_id, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['pid'])
+            # multiview regularization
 
             w_loss = loss_w_hm + loss_w_off + self.id_ratio * loss_w_id
             img_loss = loss_img_hm + loss_img_off + loss_img_wh * 0.1 + self.id_ratio * loss_img_id
@@ -136,6 +138,7 @@ class PerspectiveTrainer(BaseTrainer):
                 for b in range(B):
                     ids = scores[b].squeeze() > self.cls_thres
                     pos, s = positions[b, ids], scores[b, ids, 0]
+                    res = torch.cat([torch.ones([len(s), 1]) * frame[b], pos], dim=1)
                     ids, count = nms(pos, s, 20, np.inf)
                     res = torch.cat([torch.ones([count, 1]) * frame[b], pos[ids[:count]]], dim=1)
                     res_list.append(res)
@@ -172,3 +175,12 @@ class PerspectiveTrainer(BaseTrainer):
         print(f'Test, loss: {losses / len(dataloader):.6f}, Time: {t_epoch:.3f}')
 
         return losses / len(dataloader), moda
+
+    def process_pseudo_gt(self, img_res):
+        imgs_heatmap, imgs_offset, imgs_wh, imgs_id = img_res
+        imgs_detections = ctdet_decode(imgs_heatmap, imgs_offset, imgs_wh, imgs_id)
+        BN, K, _ = imgs_detections.shape
+        imgs_detections = imgs_detections.view(BN * K, -1)
+        world_xys = self.model.proj_mats * torch.cat([imgs_detections[:, :2],
+                                                      torch.ones([BN * K, 1], device=imgs_detections.device)], dim=1)
+        world_xys = world_xys[:, :2] / world_xys[:, 2]

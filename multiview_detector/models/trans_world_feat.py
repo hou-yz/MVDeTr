@@ -83,18 +83,18 @@ class TransformerWorldFeat(nn.Module):
         super(TransformerWorldFeat, self).__init__()
         # self.down1 = down(hidden_dim, hidden_dim)
         # self.down2 = down(hidden_dim, hidden_dim)
-        self.downsample = nn.Sequential(nn.Conv2d(hidden_dim, hidden_dim, 3, 2, 1), nn.ReLU(),
-                                        nn.Conv2d(hidden_dim, hidden_dim, 3, 2, 1), nn.ReLU(), )
+        self.downsample = nn.Sequential(nn.Conv2d(hidden_dim * num_cam, hidden_dim * num_cam, 3, 2, 1), nn.ReLU(),
+                                        nn.Conv2d(hidden_dim * num_cam, hidden_dim, 3, 2, 1), nn.ReLU(), )
 
         self.pos_embedding = create_pos_embedding(np.ceil(np.array(Rworld_shape) / 4).astype(int),
-                                                  hidden_dim // 2 * num_cam)
-        encoder_layer = TransformerEncoderLayer(d_model=hidden_dim * num_cam, dropout=dropout, nhead=nhead,
+                                                  hidden_dim // 2)
+        encoder_layer = TransformerEncoderLayer(d_model=hidden_dim, dropout=dropout, nhead=nhead,
                                                 dim_feedforward=dim_feedforward)
         self.encoder = TransformerEncoder(encoder_layer, 3)
 
         # self.up2 = up(hidden_dim * 2 * num_cam, hidden_dim * num_cam)
         # self.up1 = up(hidden_dim * 2 * num_cam, hidden_dim * num_cam)
-        self.merge_linear = nn.Sequential(nn.Conv2d(hidden_dim * num_cam, hidden_dim, 1), nn.ReLU())
+        # self.merge_linear = nn.Sequential(nn.Conv2d(hidden_dim * num_cam, hidden_dim, 1), nn.ReLU())
         self.upsample = nn.Sequential(nn.Upsample(np.ceil(np.array(Rworld_shape) / 2).astype(int).tolist(),
                                                   mode='bilinear'),
                                       nn.Conv2d(hidden_dim, hidden_dim, 3, 1, 1), nn.ReLU(),
@@ -106,15 +106,15 @@ class TransformerWorldFeat(nn.Module):
         # x1 = self.down1(x.view(B * N, C, H_og, W_og))
         # x2 = self.down2(x1)
         # _, _, H, W = x2.shape
-        x = self.downsample(x.view(B * N, C, H, W))
+        x = self.downsample(x.view(B, N * C, H, W))
         _, _, H, W = x.shape
         # H*W,B,C*N
         pos_embedding = self.pos_embedding.repeat(B, 1, 1, 1).flatten(2).permute(2, 0, 1).to(x.device)
-        x = self.encoder(x.view(B, N * C, H, W).flatten(2).permute(2, 0, 1), pos=pos_embedding)
+        x = self.encoder(x.flatten(2).permute(2, 0, 1), pos=pos_embedding)
         # x1 = self.up2(x2.permute(1, 2, 0).view(B, C * N, H, W), x1.view(B, C * N, H_og // 2, W_og // 2))
         # x = self.up1(x1, x.view(B, C * N, H_og, W_og))
-        merged_feat = self.merge_linear(x.permute(1, 2, 0).view(B, C * N, H, W))
-        merged_feat = self.upsample(merged_feat)
+        # merged_feat = self.merge_linear(x.permute(1, 2, 0).view(B, C * N, H, W))
+        merged_feat = self.upsample(x.permute(1, 2, 0).view(B, C, H, W))
         return merged_feat
 
 

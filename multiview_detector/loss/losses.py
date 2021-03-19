@@ -71,7 +71,7 @@ class RegCELoss(nn.Module):
     def forward(self, output, mask, ind, target):
         mask, ind, target = mask.to(output.device), ind.to(output.device), target.to(output.device)
         pred = _transpose_and_gather_feat(output, ind)
-        if len(target[mask]) == 0:
+        if len(target[mask]) != 0:
             loss = F.cross_entropy(pred[mask], target[mask], reduction='sum')
             loss = loss / (mask.sum() + 1e-4)
         else:

@@ -19,7 +19,7 @@ def create_coord_map(img_size, with_r=False):
 
 
 class ConvWorldFeat(nn.Module):
-    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=256, reduction=None):
+    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=512, reduction=None):
         super(ConvWorldFeat, self).__init__()
         self.coord_map = create_coord_map(Rworld_shape)
         self.reduction = reduction
@@ -31,7 +31,7 @@ class ConvWorldFeat(nn.Module):
             raise Exception
         self.world_feat = nn.Sequential(nn.Conv2d(combined_input_dim, hidden_dim, 3, padding=1), nn.ReLU(),
                                         nn.Conv2d(hidden_dim, hidden_dim, 3, padding=2, dilation=2), nn.ReLU(),
-                                        nn.Conv2d(hidden_dim, hidden_dim, 3, padding=4, dilation=4), nn.ReLU(), )
+                                        nn.Conv2d(hidden_dim, base_dim, 3, padding=4, dilation=4), nn.ReLU(), )
 
     def forward(self, x):
         B, N, C, H, W = x.shape

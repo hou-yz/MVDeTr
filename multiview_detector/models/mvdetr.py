@@ -23,15 +23,15 @@ def fill_fc_weights(layers):
 def output_head(in_dim, feat_dim, out_dim):
     if feat_dim:
         fc = nn.Sequential(nn.Conv2d(in_dim, feat_dim, 3, padding=1), nn.ReLU(),
-                           nn.Conv2d(feat_dim, out_dim, 1))
+                           nn.Conv2d(feat_dim, out_dim, 3, padding=1))
     else:
         fc = nn.Sequential(nn.Conv2d(in_dim, out_dim, 1))
     return fc
 
 
 class MVDeTr(nn.Module):
-    def __init__(self, dataset, arch='resnet18', z=0, world_feat_arch='conv', reduction=None,
-                 bottleneck_dim=128, hidden_dim=128, outfeat_dim=0, droupout=0.5):
+    def __init__(self, dataset, arch='resnet18', z=0, world_feat_arch='conv',
+                 bottleneck_dim=128, outfeat_dim=0, droupout=0.5):
         super().__init__()
         self.Rimg_shape, self.Rworld_shape = dataset.Rimg_shape, dataset.Rworld_shape
 
@@ -85,21 +85,21 @@ class MVDeTr(nn.Module):
         # world feat
         if world_feat_arch == 'conv':
             self.world_feat = ConvWorldFeat(dataset.num_cam, dataset.Rworld_shape,
-                                            base_dim, hidden_dim, reduction).to('cuda:0')
+                                            base_dim).to('cuda:0')
         elif world_feat_arch == 'trans':
             self.world_feat = TransformerWorldFeat(dataset.num_cam, dataset.Rworld_shape, base_dim).to('cuda:0')
         elif world_feat_arch == 'deform_conv':
             self.world_feat = DeformConvWorldFeat(dataset.num_cam, dataset.Rworld_shape,
-                                                  base_dim, hidden_dim).to('cuda:0')
+                                                  base_dim).to('cuda:0')
         elif world_feat_arch == 'deform_trans':
             self.world_feat = DeformTransWorldFeat(dataset.num_cam, dataset.Rworld_shape, base_dim).to('cuda:0')
         else:
             raise Exception
 
         # world heads
-        self.world_heatmap = output_head(hidden_dim, outfeat_dim, 1).to('cuda:0')
-        self.world_offset = output_head(hidden_dim, outfeat_dim, 2).to('cuda:0')
-        self.world_id = output_head(hidden_dim, outfeat_dim, len(dataset.pid_dict)).to('cuda:0')
+        self.world_heatmap = output_head(base_dim, outfeat_dim, 1).to('cuda:0')
+        self.world_offset = output_head(base_dim, outfeat_dim, 2).to('cuda:0')
+        self.world_id = output_head(base_dim, outfeat_dim, len(dataset.pid_dict)).to('cuda:0')
 
         # init
         self.img_heatmap[-1].bias.data.fill_(-2.19)
@@ -163,7 +163,7 @@ def test():
                            img_reduce=16)
     dataloader = DataLoader(dataset, 1, False, num_workers=0)
     imgs, world_gt, imgs_gt, frame = next(iter(dataloader))
-    model = MVDeTr(dataset, arch='resnet18', world_feat_arch='trans')
+    model = MVDeTr(dataset, arch='resnet18', world_feat_arch='conv')
     (world_heatmap, world_offset, world_id), (imgs_heatmap, imgs_offset, imgs_wh, imgs_id) = model(imgs, visualize=True)
     xysc = ctdet_decode(world_heatmap, world_offset)
     pass
