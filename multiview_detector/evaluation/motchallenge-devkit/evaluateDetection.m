@@ -58,10 +58,10 @@ detAllMatrix=zeros(0,4);
     detRaw=readtable(res_fpath);
     detRaw=detRaw{:,:};
     if isempty(detRaw)
-        detRaw = [frames',ones(length(frames),2).*inf];
+        frames=[];
+    else
+        frames = unique(detRaw(:,1))';
     end
-
-    frames = unique(detRaw(:,1))';
 
     % 
     detOne = {};
