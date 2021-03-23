@@ -19,7 +19,7 @@ def create_coord_map(img_size, with_r=False):
 
 
 class ConvWorldFeat(nn.Module):
-    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=512, reduction=None):
+    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=256, reduction=None):
         super(ConvWorldFeat, self).__init__()
         self.coord_map = create_coord_map(Rworld_shape)
         self.reduction = reduction

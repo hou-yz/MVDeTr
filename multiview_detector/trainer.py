@@ -41,14 +41,15 @@ class PerspectiveTrainer(BaseTrainer):
         t_b = time.time()
         t_forward = 0
         t_backward = 0
-        for batch_idx, (data, world_gt, imgs_gt, frame) in enumerate(dataloader):
+        for batch_idx, (data, world_gt, imgs_gt, affine_mats, frame) in enumerate(dataloader):
             B, N = imgs_gt['heatmap'].shape[:2]
             for key in imgs_gt.keys():
                 imgs_gt[key] = imgs_gt[key].view([B * N] + list(imgs_gt[key].shape)[2:])
             # with autocast():
             # supervised
-            (world_heatmap, world_offset, world_id), (imgs_heatmap, imgs_offset, imgs_wh, imgs_id) = self.model(data)
-            loss_w_hm = self.focal_loss(world_heatmap, world_gt['heatmap'], world_gt['heatmap_mask'])
+            (world_heatmap, world_offset, world_id), (imgs_heatmap, imgs_offset, imgs_wh, imgs_id) = \
+                self.model(data, affine_mats)
+            loss_w_hm = self.focal_loss(world_heatmap, world_gt['heatmap'])
             loss_w_off = self.regress_loss(world_offset, world_gt['reg_mask'], world_gt['idx'], world_gt['offset'])
             loss_w_id = self.ce_loss(world_id, world_gt['reg_mask'], world_gt['idx'], world_gt['pid'])
             loss_img_hm = self.focal_loss(imgs_heatmap, imgs_gt['heatmap'], imgs_gt['heatmap_mask'])
@@ -100,25 +101,26 @@ class PerspectiveTrainer(BaseTrainer):
         losses = 0
         res_list = []
         t0 = time.time()
-        for batch_idx, (data, world_gt, imgs_gt, frame) in enumerate(dataloader):
+        for batch_idx, (data, world_gt, imgs_gt, affine_mats, frame) in enumerate(dataloader):
             B, N = imgs_gt['heatmap'].shape[:2]
             for key in imgs_gt.keys():
                 imgs_gt[key] = imgs_gt[key].view([B * N] + list(imgs_gt[key].shape)[2:])
             # with autocast():
             with torch.no_grad():
                 (world_heatmap, world_offset, world_id), (imgs_heatmap, imgs_offset, imgs_wh, imgs_id) = \
-                    self.model(data)
-                loss_w_hm = self.focal_loss(world_heatmap, world_gt['heatmap'], world_gt['heatmap_mask'])
-                loss_w_off = self.regress_loss(world_offset, world_gt['reg_mask'], world_gt['idx'], world_gt['offset'])
-                loss_w_id = self.ce_loss(world_id, world_gt['reg_mask'], world_gt['idx'], world_gt['pid'])
-                loss_img_hm = self.focal_loss(imgs_heatmap, imgs_gt['heatmap'], imgs_gt['heatmap_mask'])
-                loss_img_off = self.regress_loss(imgs_offset, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['offset'])
-                loss_img_wh = self.regress_loss(imgs_wh, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['wh'])
-                loss_img_id = self.ce_loss(imgs_id, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['pid'])
+                    self.model(data, affine_mats)
+                loss_w_hm = self.focal_loss(world_heatmap, world_gt['heatmap'])
+                # loss_w_off = self.regress_loss(world_offset, world_gt['reg_mask'], world_gt['idx'], world_gt['offset'])
+                # loss_w_id = self.ce_loss(world_id, world_gt['reg_mask'], world_gt['idx'], world_gt['pid'])
+                # loss_img_hm = self.focal_loss(imgs_heatmap, imgs_gt['heatmap'], imgs_gt['heatmap_mask'])
+                # loss_img_off = self.regress_loss(imgs_offset, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['offset'])
+                # loss_img_wh = self.regress_loss(imgs_wh, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['wh'])
+                # loss_img_id = self.ce_loss(imgs_id, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['pid'])
 
-                w_loss = loss_w_hm + loss_w_off + self.id_ratio * loss_w_id
-                img_loss = loss_img_hm + loss_img_off + loss_img_wh * 0.1 + self.id_ratio * loss_img_id
-                loss = w_loss + img_loss / N * self.alpha
+                # w_loss = loss_w_hm + loss_w_off + self.id_ratio * loss_w_id
+                # img_loss = loss_img_hm + loss_img_off + loss_img_wh * 0.1 + self.id_ratio * loss_img_id
+                # loss = w_loss + img_loss / N * self.alpha
+                loss = loss_w_hm
                 if self.use_mse:
                     loss = self.mse_loss(world_heatmap, world_gt['heatmap'].to(world_heatmap.device)) + \
                            self.alpha * self.mse_loss(imgs_heatmap, imgs_gt['heatmap'].to(imgs_heatmap.device))

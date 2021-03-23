@@ -51,19 +51,17 @@ def main(args):
 
     # dataset
     denormalize = img_color_denormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-    trans = T.Compose([T.Resize([1080 * 8 // args.img_reduce, 1920 * 8 // args.img_reduce]), T.ToTensor(),
-                       T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)), ])
     if 'wildtrack' in args.dataset:
         base = Wildtrack(os.path.expanduser('~/Data/Wildtrack'))
     elif 'multiviewx' in args.dataset:
         base = MultiviewX(os.path.expanduser('~/Data/MultiviewX'))
     else:
         raise Exception('must choose from [wildtrack, multiviewx]')
-    train_set = frameDataset(base, train=True, transform=trans, world_reduce=args.world_reduce,
+    train_set = frameDataset(base, train=True, world_reduce=args.world_reduce,
                              img_reduce=args.img_reduce, world_kernel_size=args.world_kernel_size,
                              img_kernel_size=args.img_kernel_size, semi_supervised=args.semi_supervised,
-                             dropout=args.dropcam)
-    test_set = frameDataset(base, train=False, transform=trans, world_reduce=args.world_reduce,
+                             dropout=args.dropcam, augmentation=args.augmentation)
+    test_set = frameDataset(base, train=False, world_reduce=args.world_reduce,
                             img_reduce=args.img_reduce, world_kernel_size=args.world_kernel_size,
                             img_kernel_size=args.img_kernel_size)
 
@@ -80,10 +78,9 @@ def main(args):
     # logging
     if args.resume is None:
         logdir = f'logs/{args.dataset}/{"debug_" if is_debug else ""}{"SS_" if args.semi_supervised else ""}' \
-                 f'{args.world_feat}_bottleneck{args.bottleneck_dim}_outfeat{args.outfeat_dim}_' \
-                 f'mse{int(args.use_mse)}_alpha{args.alpha}_drop{args.dropout}_dropcam{args.dropcam}_id{args.id_ratio}_' \
-                 f'worldR{args.world_reduce}_imgR{args.img_reduce}_' \
-                 f'worldK{args.world_kernel_size}_imgK{args.img_kernel_size}_' \
+                 f'aug{args.augmentation.upper()}_{args.world_feat}_neck{args.bottleneck_dim}_out{args.outfeat_dim}_' \
+                 f'alpha{args.alpha}_id{args.id_ratio}_drop{args.dropout}_dropcam{args.dropcam}_' \
+                 f'worldRK{args.world_reduce}_{args.world_kernel_size}_imgRK{args.img_reduce}_{args.img_kernel_size}_' \
                  f'{datetime.datetime.today():%Y-%m-%d_%H-%M-%S}'
         os.makedirs(logdir, exist_ok=True)
         copy_tree('./multiview_detector', logdir + '/scripts/multiview_detector')
@@ -102,22 +99,21 @@ def main(args):
     model = MVDeTr(train_set, args.arch, world_feat_arch=args.world_feat,
                    bottleneck_dim=args.bottleneck_dim, outfeat_dim=args.outfeat_dim, droupout=args.dropout)
 
-    # base_param_ids = set(map(id, model.base.parameters()))
-    # new_params = [p for p in model.parameters() if id(p) not in base_param_ids]
-    # optimizer = optim.SGD([{'params': model.base.parameters(), 'lr': args.lr * 0.1},
-    #                        {'params': new_params}, ],
-    #                       lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-    # optimizer = optim.Adam([{'params': model.base.parameters(), 'lr': args.lr * 0.1},
-    #                         {'params': new_params}, ], weight_decay=args.weight_decay)
-    # optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    base_param_ids = set(map(id, model.base.parameters()))
+    new_params = [p for p in model.parameters() if id(p) not in base_param_ids]
+    # optimizer = optim.SGD([{'params': model.base.parameters(), 'lr': args.lr * args.base_lr_ratio},
+    #                        {'params': new_params}, ], args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    optimizer = optim.Adam([{'params': model.base.parameters(), 'lr': args.lr * args.base_lr_ratio},
+                            {'params': new_params}, ], args.lr, weight_decay=args.weight_decay)
+    # optimizer = optim.Adam(model.parameters(), args.lr, weight_decay=args.weight_decay)
+    # optimizer = optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     scaler = GradScaler()
 
-    def warmup_lr_scheduler(epoch, warmup_epochs=2, step=args.step_size):
+    def warmup_lr_scheduler(epoch, warmup_epochs=2):
         if epoch < warmup_epochs:
             return epoch / warmup_epochs
         else:
-            return 0.1 ** int(np.log(epoch) / np.log(step))
+            return (np.cos((epoch - warmup_epochs) / (args.epochs - warmup_epochs) * np.pi) + 1) / 2
 
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, args.epochs)
     # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=len(train_loader),
@@ -168,30 +164,29 @@ if __name__ == '__main__':
     parser.add_argument('--use_mse', type=str2bool, default=False)
     parser.add_argument('--arch', type=str, default='resnet18', choices=['vgg11', 'resnet18', 'mobilenet'])
     parser.add_argument('-d', '--dataset', type=str, default='wildtrack', choices=['wildtrack', 'multiviewx'])
-    parser.add_argument('-j', '--num_workers', type=int, default=4)
+    parser.add_argument('-j', '--num_workers', type=int, default=8)
     parser.add_argument('-b', '--batch_size', type=int, default=1, help='input batch size for training (default: 1)')
     parser.add_argument('--dropout', type=float, default=0.5)
     parser.add_argument('--dropcam', type=float, default=0.0)
-    parser.add_argument('--epochs', type=int, default=10, help='number of epochs to train (default: 10)')
-    parser.add_argument('--step_size', type=int, default=100)
-    parser.add_argument('--lr', type=float, default=5e-3, help='learning rate')
+    parser.add_argument('--epochs', type=int, default=20, help='number of epochs to train (default: 10)')
+    parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
+    parser.add_argument('--base_lr_ratio', type=float, default=1)
     parser.add_argument('--weight_decay', type=float, default=5e-4)
     parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum (default: 0.9)')
     parser.add_argument('--resume', type=str, default=None)
     parser.add_argument('--visualize', action='store_true')
     parser.add_argument('--seed', type=int, default=2021, help='random seed (default: None)')
     parser.add_argument('--deterministic', type=str2bool, default=False)
+    parser.add_argument('--augmentation', type=str, default='FCS')
 
     parser.add_argument('--world_feat', type=str, default='conv',
                         choices=['conv', 'trans', 'deform_conv', 'deform_trans'])
     parser.add_argument('--bottleneck_dim', type=int, default=128)
     parser.add_argument('--outfeat_dim', type=int, default=128)
-    parser.add_argument('--world_reduce', type=int, default=4)
-    parser.add_argument('--img_reduce', type=int, default=12)
+    parser.add_argument('--world_reduce', type=int, default=5)
     parser.add_argument('--world_kernel_size', type=int, default=10)
+    parser.add_argument('--img_reduce', type=int, default=12)
     parser.add_argument('--img_kernel_size', type=int, default=10)
-    parser.add_argument('--reduction', type=str, default=None)
-    parser.add_argument('--use_multicam', type=bool, default=False)
 
     args = parser.parse_args()
 

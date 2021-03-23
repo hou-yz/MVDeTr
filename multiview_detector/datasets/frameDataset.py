@@ -6,10 +6,16 @@ import kornia
 from torchvision.datasets import VisionDataset
 import torch
 import torch.nn.functional as F
-from torchvision.transforms import ToTensor
+import torchvision.transforms as T
 from multiview_detector.utils.projection import *
 from multiview_detector.utils.gaussian import draw_umich_gaussian
 import matplotlib.pyplot as plt
+
+
+def trans_gt(affine_mat, x_s, y_s, w_s, h_s):
+    x_s, y_s = affine_mat @ np.stack([x_s, y_s, np.ones_like(x_s)], axis=0)
+    w_s, h_s = affine_mat[:, :2] @ np.stack([w_s, h_s], axis=0)
+    return x_s.tolist(), y_s.tolist(), w_s.tolist(), h_s.tolist()
 
 
 def get_gt(Rshape, x_s, y_s, w_s=None, h_s=None, v_s=None, reduce=4, top_k=100, kernel_size=4):
@@ -23,17 +29,17 @@ def get_gt(Rshape, x_s, y_s, w_s=None, h_s=None, v_s=None, reduce=4, top_k=100, 
 
     for k in range(len(v_s)):
         ct = np.array([x_s[k] / reduce, y_s[k] / reduce], dtype=np.float32)
-        assert 0 <= ct[0] < W and 0 <= ct[1] < H
-        ct_int = ct.astype(np.int32)
-        draw_umich_gaussian(heatmap[0], ct_int, kernel_size / reduce)
-        reg_mask[k] = 1
-        idx[k] = ct_int[1] * W + ct_int[0]
-        pid[k] = v_s[k]
-        offset[k] = ct - ct_int
-        if w_s is not None and h_s is not None:
-            wh[k] = [w_s[k] / reduce, h_s[k] / reduce]
-        # plt.imshow(heatmap[0])
-        # plt.show()
+        if 0 <= ct[0] < W and 0 <= ct[1] < H:
+            ct_int = ct.astype(np.int32)
+            draw_umich_gaussian(heatmap[0], ct_int, kernel_size / reduce)
+            reg_mask[k] = 1
+            idx[k] = ct_int[1] * W + ct_int[0]
+            pid[k] = v_s[k]
+            offset[k] = ct - ct_int
+            if w_s is not None and h_s is not None:
+                wh[k] = [w_s[k] / reduce, h_s[k] / reduce]
+            # plt.imshow(heatmap[0])
+            # plt.show()
 
     ret = {'heatmap': torch.from_numpy(heatmap), 'reg_mask': torch.from_numpy(reg_mask), 'idx': torch.from_numpy(idx),
            'pid': torch.from_numpy(pid), 'offset': torch.from_numpy(offset)}
@@ -43,20 +49,25 @@ def get_gt(Rshape, x_s, y_s, w_s=None, h_s=None, v_s=None, reduce=4, top_k=100, 
 
 
 class frameDataset(VisionDataset):
-    def __init__(self, base, train=True, transform=ToTensor(), target_transform=None, reID=False,
-                 world_reduce=4, img_reduce=12, world_kernel_size=20, img_kernel_size=10,
-                 train_ratio=0.9, top_k=100, force_download=True, semi_supervised=0.0, dropout=0.0):
-        super().__init__(base.root, transform=transform, target_transform=target_transform)
+    def __init__(self, base, train=True, reID=False, world_reduce=4, img_reduce=12,
+                 world_kernel_size=20, img_kernel_size=10,
+                 train_ratio=0.9, top_k=100, force_download=True,
+                 semi_supervised=0.0, dropout=0.0, augmentation=''):
+        super().__init__(base.root)
 
         self.base = base
         self.num_cam, self.num_frame = base.num_cam, base.num_frame
         # world (grid) reduce: on top of the 2.5cm grid
         self.reID, self.top_k = reID, top_k
+        # reduce = input/output
         self.world_reduce, self.img_reduce = world_reduce, img_reduce
         self.img_shape, self.worldgrid_shape = base.img_shape, base.worldgrid_shape  # H,W; N_row,N_col
         self.world_kernel_size, self.img_kernel_size = world_kernel_size, img_kernel_size
         self.semi_supervised = semi_supervised * train
         self.dropout = dropout
+        self.transform = T.Compose([T.ToTensor(), T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)), ])
+        augmentation = augmentation.upper() if train else ''
+        self.crop, self.hflip, self.scale = 'F' in augmentation, 'C' in augmentation, 'S' in augmentation
 
         self.Rworld_shape = list(map(lambda x: x // self.world_reduce, self.worldgrid_shape))
         self.Rimg_shape = np.ceil(np.array(self.img_shape) / self.img_reduce).astype(int).tolist()
@@ -66,11 +77,9 @@ class frameDataset(VisionDataset):
         else:
             frame_range = range(int(self.num_frame * train_ratio), self.num_frame)
 
-        self.worlds_region, self.imgs_region = self.get_world_imgs_mask()
-        self.worlds_region = F.interpolate(self.worlds_region, self.Rworld_shape, mode='bilinear',
-                                           align_corners=False).bool().float()
-        self.imgs_region = F.interpolate(self.imgs_region, self.Rimg_shape, mode='bilinear',
-                                         align_corners=False).bool().float()
+        self.world_from_img, self.img_from_world = self.get_world_imgs_trans()
+        world_masks = torch.ones([self.num_cam, 1] + self.worldgrid_shape)
+        self.imgs_region = kornia.warp_perspective(world_masks, self.img_from_world, self.img_shape, flags='nearest')
 
         self.img_fpaths = self.base.get_image_fpaths(frame_range)
         self.world_gt = {}
@@ -141,7 +150,7 @@ class frameDataset(VisionDataset):
 
         pass
 
-    def get_world_imgs_mask(self, z=0):
+    def get_world_imgs_trans(self, z=0):
         # image and world feature maps from xy indexing, change them into world indexing / xy indexing (img)
         # world grid change to xy indexing
         Rworldgrid_from_worldcoord_mat = np.linalg.inv(self.base.worldcoord_from_worldgrid_mat @
@@ -157,13 +166,9 @@ class frameDataset(VisionDataset):
         proj_mats = [Rworldgrid_from_worldcoord_mat @ worldcoord_from_imgcoord_mats[cam] @ self.base.img_xy_from_xy_mat
                      for cam in range(self.num_cam)]
         world_from_img = torch.tensor(np.stack(proj_mats))
-        world_mask = torch.ones([self.num_cam, 1] + list(self.img_shape))
-        world_mask = kornia.warp_perspective(world_mask, world_from_img.float(), self.worldgrid_shape, flags='nearest')
         # img(xy)_from_worldgrid(xy)
         img_from_world = torch.tensor(np.stack([np.linalg.inv(proj_mat) for proj_mat in proj_mats]))
-        imgs_mask = torch.ones([self.num_cam, 1] + list(self.worldgrid_shape))
-        imgs_mask = kornia.warp_perspective(imgs_mask, img_from_world.float(), self.img_shape, flags='nearest')
-        return world_mask, imgs_mask
+        return world_from_img.float(), img_from_world.float()
 
     def prepare_gt(self):
         og_gt = []
@@ -187,42 +192,77 @@ class frameDataset(VisionDataset):
         os.makedirs(os.path.dirname(self.gt_fpath), exist_ok=True)
         np.savetxt(self.gt_fpath, og_gt, '%d')
 
-    def __getitem__(self, index):
+    def __getitem__(self, index, visualize=False):
+        def plt_visualize():
+            fig, ax = plt.subplots(1)
+            ax.imshow(img.permute(1, 2, 0))
+            from matplotlib.patches import Circle
+            for i in range(len(img_x_s)):
+                x, y = img_x_s[i], img_y_s[i]
+                if x > 0 and y > 0:
+                    ax.add_patch(Circle((x, y), 10))
+            plt.show()
+
         frame = list(self.world_gt.keys())[index]
         # imgs
-        imgs = []
+        imgs, imgs_gt, affine_mats = [], [], []
         for cam in range(self.num_cam):
             fpath = self.img_fpaths[cam][frame]
             img = Image.open(fpath).convert('RGB')
-            if self.transform is not None:
-                img = self.transform(img)
-            imgs.append(img)
-        imgs = torch.stack(imgs)
-        # imgs gt
-        imgs_gt = []
-        # imgs_gt = {'heatmap': [], 'reg_mask': [], 'idx': [], 'pid': [], 'offset': [], 'wh': []}
-        for cam in range(self.num_cam):
+            img = self.transform(img)
+            # visualize
+            if visualize:
+                img_x_s, img_y_s, img_w_s, img_h_s, img_pid_s = self.imgs_gt[frame][cam]
+                plt_visualize()
+            # img(xy)_from_img(xy)
+            affine_mat = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float)
+            hflip = np.random.rand() < 0.5 if self.hflip else 0
+            crop = (np.random.rand(2) - 0.5) * np.array(self.img_shape[::-1]) * (0.4 if self.crop else 0)
+            scale = (np.random.choice(np.arange(0.6, 1.4, 0.1)) if self.scale else 1) * np.eye(2)
+            if hflip:
+                affine_mat[0, 0] = -1
+                affine_mat[0, 2] = self.img_shape[1]
+            affine_mat[:, 2] += crop
+            affine_mat = torch.from_numpy(scale @ affine_mat).float()
+            img = kornia.warp_affine(img.unsqueeze(0), affine_mat.unsqueeze(0),
+                                     self.img_shape).squeeze(0)
+            imgs.append(T.functional.resize(img, (np.array(self.img_shape) * 8 // self.img_reduce).tolist()))
+            affine_mats.append(affine_mat)
+
             img_x_s, img_y_s, img_w_s, img_h_s, img_pid_s = self.imgs_gt[frame][cam]
+            img_x_s, img_y_s, img_w_s, img_h_s = trans_gt(affine_mat.numpy(), img_x_s, img_y_s, img_w_s, img_h_s)
             img_gt = get_gt(self.Rimg_shape, img_x_s, img_y_s, img_w_s, img_h_s, v_s=img_pid_s,
                             reduce=self.img_reduce, top_k=self.top_k, kernel_size=self.img_kernel_size)
             imgs_gt.append(img_gt)
+            if visualize:
+                plt_visualize()
+
+        imgs = torch.stack(imgs)
+        affine_mats = torch.stack(affine_mats)
+        # inverse_affine_mats = torch.inverse(
+        #     torch.cat([affine_mats, torch.tensor([0, 0, 1]).view(1, 1, 3).repeat(self.num_cam, 1, 1)], dim=1))[:, :2]
         imgs_gt = {key: torch.stack([img_gt[key] for img_gt in imgs_gt]) for key in imgs_gt[0]}
         imgs_gt['heatmap_mask'] = self.imgs_region if self.keeps[frame] else torch.zeros_like(self.imgs_region)
+        imgs_gt['heatmap_mask'] = kornia.warp_affine(imgs_gt['heatmap_mask'], affine_mats, self.img_shape)
+        imgs_gt['heatmap_mask'] = F.interpolate(imgs_gt['heatmap_mask'], self.Rimg_shape, mode='bilinear',
+                                                align_corners=False).bool().float()
         drop, keep_cams = np.random.rand() < self.dropout, torch.ones(self.num_cam, dtype=torch.bool)
         if drop:
             drop_cam = np.random.randint(0, self.num_cam)
             keep_cams[drop_cam] = 0
             for key in imgs_gt:
                 imgs_gt[key][drop_cam] = 0
-        imgs_gt['region'] = self.imgs_region
         # world gt
         world_x_s, world_y_s, world_pid_s = self.world_gt[frame]
         world_gt = get_gt(self.Rworld_shape, world_x_s, world_y_s, v_s=world_pid_s,
                           reduce=self.world_reduce, top_k=self.top_k, kernel_size=self.world_kernel_size)
-        world_gt['heatmap_mask'] = torch.sum(self.worlds_region[keep_cams], dim=0).bool()
-        world_gt['heatmap'] = world_gt['heatmap'] * world_gt['heatmap_mask']
-        world_gt['region'] = self.worlds_region
-        return imgs, world_gt, imgs_gt, frame
+        # imgs_mask = kornia.warp_affine(torch.ones([self.num_cam, 1] + self.img_shape), affine_mats, self.img_shape)
+        # imgs_mask = kornia.warp_affine(imgs_mask, inverse_affine_mats, self.img_shape)
+        # world_masks = kornia.warp_perspective(imgs_mask, self.world_from_img, self.worldgrid_shape, flags='nearest')
+        # world_gt['heatmap_mask'] = F.interpolate(torch.sum(world_masks, dim=0, keepdim=True), self.Rworld_shape,
+        #                                          mode='bilinear', align_corners=False).bool().squeeze(0)
+        # world_gt['heatmap'] = world_gt['heatmap'] * world_gt['heatmap_mask']
+        return imgs, world_gt, imgs_gt, affine_mats, frame
 
     def __len__(self):
         return len(self.world_gt.keys())
@@ -233,7 +273,7 @@ def test(test_projection=False):
     from multiview_detector.datasets.Wildtrack import Wildtrack
     from multiview_detector.datasets.MultiviewX import MultiviewX
 
-    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=True, dropout=0.5)
+    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=True, augmentation='FCS')
     # dataset = frameDataset(MultiviewX(os.path.expanduser('~/Data/MultiviewX')), train=True)
     # dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=True, semi_supervised=.1)
     # dataset = frameDataset(MultiviewX(os.path.expanduser('~/Data/MultiviewX')), train=True, semi_supervised=.1)
@@ -250,8 +290,8 @@ def test(test_projection=False):
             min_dist = min(min_dist, np.min(xy_dists))
             pass
     dataloader = DataLoader(dataset, 2, True, num_workers=0)
-    imgs, world_gt, imgs_gt, frame = next(iter(dataloader))
-    imgs, world_gt, imgs_gt, frame = dataset.__getitem__(188)
+    # imgs, world_gt, imgs_gt, affine_mats, frame = next(iter(dataloader))
+    imgs, world_gt, imgs_gt, affine_mats, frame = dataset.__getitem__(188, visualize=True)
 
     pass
     if test_projection:

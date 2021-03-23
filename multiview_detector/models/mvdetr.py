@@ -34,10 +34,8 @@ class MVDeTr(nn.Module):
                  bottleneck_dim=128, outfeat_dim=0, droupout=0.5):
         super().__init__()
         self.Rimg_shape, self.Rworld_shape = dataset.Rimg_shape, dataset.Rworld_shape
+        self.img_reduce, self.img_xy_from_xy_mat = dataset.img_reduce, dataset.base.img_xy_from_xy_mat
 
-        # image and world feature maps from xy indexing, change them into world indexing / xy indexing (img)
-        imgcoord_from_Rimggrid_mat = np.diag([dataset.img_reduce, dataset.img_reduce, 1]) @ \
-                                     dataset.base.img_xy_from_xy_mat
         # world grid change to xy indexing
         world_zoom_mat = np.diag([dataset.world_reduce, dataset.world_reduce, 1])
         Rworldgrid_from_worldcoord_mat = np.linalg.inv(
@@ -49,10 +47,9 @@ class MVDeTr(nn.Module):
                                                                           dataset.base.extrinsic_matrices[cam],
                                                                           z / dataset.base.worldcoord_unit)
                                          for cam in range(dataset.num_cam)]
-        # Rworldgrid(xy)_from_Rimggrid(xy)
+        # Rworldgrid(xy)_from_imgcoord(xy)
         self.proj_mats = torch.stack([torch.from_numpy(Rworldgrid_from_worldcoord_mat @
-                                                       worldcoord_from_imgcoord_mats[cam] @
-                                                       imgcoord_from_Rimggrid_mat)
+                                                       worldcoord_from_imgcoord_mats[cam])
                                       for cam in range(dataset.num_cam)]).to('cuda:0')
 
         self.use_cuda1 = 'cuda:0' if torch.cuda.device_count() == 1 else 'cuda:1'
@@ -109,15 +106,26 @@ class MVDeTr(nn.Module):
         fill_fc_weights(self.world_offset)
         pass
 
-    def forward(self, imgs, visualize=False):
+    def forward(self, imgs, affine_mats, visualize=False):
         B, N, C, H, W = imgs.shape
         imgs = imgs.view(B * N, C, H, W)
-        imgs_feat = self.base(imgs.to(self.use_cuda1))
-        imgs_feat = self.bottleneck(imgs_feat).to('cuda:0')
         if visualize:
             for cam in range(N):
-                plt.imshow(torch.norm(imgs_feat[cam * B].detach(), dim=0).cpu().numpy())
+                plt.imshow(torch.norm(imgs[cam * B].detach(), dim=0).cpu().numpy())
                 plt.show()
+
+        affine_mats = torch.cat([affine_mats.view(B * N, 2, 3),
+                                 torch.tensor([0, 0, 1]).view(1, 1, 3).repeat(B * N, 1, 1)], dim=1).to('cuda:0')
+        inverse_affine_mats = torch.inverse(affine_mats)
+        # image and world feature maps from xy indexing, change them into world indexing / xy indexing (img)
+        imgcoord_from_Rimggrid_mat = np.diag([self.img_reduce, self.img_reduce, 1]) @ self.img_xy_from_xy_mat
+        imgcoord_from_Rimggrid_mat = inverse_affine_mats @ torch.from_numpy(imgcoord_from_Rimggrid_mat). \
+            view(1, 3, 3).repeat(B * N, 1, 1).to('cuda:0').float()
+        # Rworldgrid(xy)_from_Rimggrid(xy)
+        proj_mats = self.proj_mats.repeat(B, 1, 1, 1).view(B * N, 3, 3).float() @ imgcoord_from_Rimggrid_mat
+
+        imgs_feat = self.base(imgs.to(self.use_cuda1))
+        imgs_feat = self.bottleneck(imgs_feat).to('cuda:0')
 
         # img heads
         _, C, H, W = imgs_feat.shape
@@ -128,7 +136,7 @@ class MVDeTr(nn.Module):
 
         # world feat
         H, W = self.Rworld_shape
-        world_feat = kornia.warp_perspective(imgs_feat, self.proj_mats.repeat(B, 1, 1, 1).view(B * N, 3, 3).float(),
+        world_feat = kornia.warp_perspective(imgs_feat, proj_mats,
                                              self.Rworld_shape, align_corners=False).view(B, N, C, H, W)
         if visualize:
             for cam in range(N):
@@ -141,11 +149,11 @@ class MVDeTr(nn.Module):
         world_offset = self.world_offset(world_feat)
         world_id = self.world_id(world_feat)
 
-        if visualize:
-            plt.imshow(torch.norm(world_feat[0].detach(), dim=0).cpu().numpy())
-            plt.show()
-            plt.imshow(torch.norm(world_heatmap[0].detach(), dim=0).cpu().numpy())
-            plt.show()
+        # if visualize:
+        #     plt.imshow(torch.norm(world_feat[0].detach(), dim=0).cpu().numpy())
+        #     plt.show()
+        #     plt.imshow(torch.norm(world_heatmap[0].detach(), dim=0).cpu().numpy())
+        #     plt.show()
         return (world_heatmap, world_offset, world_id), (imgs_heatmap, imgs_offset, imgs_wh, imgs_id)
 
 
@@ -156,15 +164,18 @@ def test():
     from torch.utils.data import DataLoader
     from multiview_detector.utils.decode import ctdet_decode
 
-    transform = T.Compose([T.Resize([540, 960]),  # H,W
-                           T.ToTensor(),
-                           T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), transform=transform, train=False,
-                           img_reduce=16)
-    dataloader = DataLoader(dataset, 1, False, num_workers=0)
-    imgs, world_gt, imgs_gt, frame = next(iter(dataloader))
+    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=True, augmentation='FCS')
     model = MVDeTr(dataset, arch='resnet18', world_feat_arch='conv')
-    (world_heatmap, world_offset, world_id), (imgs_heatmap, imgs_offset, imgs_wh, imgs_id) = model(imgs, visualize=True)
+    dataloader = DataLoader(dataset, 1, False, num_workers=0)
+    imgs, world_gt, imgs_gt, affine_mats, frame = next(iter(dataloader))
+    model(imgs, affine_mats, visualize=True)
+    imgs, world_gt, imgs_gt, affine_mats, frame = next(iter(dataloader))
+    model(imgs, affine_mats, visualize=True)
+    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=True, augmentation='')
+    dataloader = DataLoader(dataset, 1, False, num_workers=0)
+    imgs, world_gt, imgs_gt, affine_mats, frame = next(iter(dataloader))
+    (world_heatmap, world_offset, world_id), (imgs_heatmap, imgs_offset, imgs_wh, imgs_id) = model(imgs, affine_mats,
+                                                                                                   visualize=True)
     xysc = ctdet_decode(world_heatmap, world_offset)
     pass
 
