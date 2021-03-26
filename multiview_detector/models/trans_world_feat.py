@@ -10,49 +10,6 @@ from multiview_detector.models.deformable_transformer import DeformableTransform
 from multiview_detector.models.ops.modules import MSDeformAttn
 
 
-class double_conv(nn.Module):
-    '''(conv => ReLU) * 2'''
-
-    def __init__(self, in_ch, out_ch):
-        super(double_conv, self).__init__()
-        self.conv = nn.Sequential(nn.Conv2d(in_ch, out_ch, 3, padding=1), nn.ReLU(),
-                                  nn.Conv2d(out_ch, out_ch, 3, padding=2, dilation=2))
-        if in_ch != out_ch:
-            self.shortcut = nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=1, bias=False)
-        else:
-            self.shortcut = nn.Identity()
-
-    def forward(self, x):
-        x = F.relu(self.conv(x) + self.shortcut(x))
-        return x
-
-
-class down(nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super(down, self).__init__()
-        self.mpconv = nn.Sequential(nn.MaxPool2d(2), double_conv(in_ch, out_ch))
-
-    def forward(self, x):
-        x = self.mpconv(x)
-        return x
-
-
-class up(nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super(up, self).__init__()
-        self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.conv = double_conv(in_ch, out_ch)
-
-    def forward(self, x2, x1):
-        # x2 (small), x1 (large)
-        x2 = self.up(x2)
-        diffY, diffX = x1.size()[2] - x2.size()[2], x1.size()[3] - x2.size()[3]
-        x2 = F.pad(x2, (diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2))
-        x = torch.cat([x1, x2], dim=1)
-        x = self.conv(x)
-        return x
-
-
 def create_pos_embedding(img_size, num_pos_feats=64, temperature=10000, normalize=True, scale=None):
     if scale is not None and normalize is False:
         raise ValueError("normalize should be True if scale is passed")
@@ -81,8 +38,6 @@ def create_pos_embedding(img_size, num_pos_feats=64, temperature=10000, normaliz
 class TransformerWorldFeat(nn.Module):
     def __init__(self, num_cam, Rworld_shape, hidden_dim=128, dropout=0.1, nhead=8, dim_feedforward=512):
         super(TransformerWorldFeat, self).__init__()
-        # self.down1 = down(hidden_dim, hidden_dim)
-        # self.down2 = down(hidden_dim, hidden_dim)
         self.downsample = nn.Sequential(nn.Conv2d(hidden_dim * num_cam, hidden_dim * num_cam, 3, 2, 1), nn.ReLU(),
                                         nn.Conv2d(hidden_dim * num_cam, hidden_dim, 3, 2, 1), nn.ReLU(), )
 
@@ -92,9 +47,6 @@ class TransformerWorldFeat(nn.Module):
                                                 dim_feedforward=dim_feedforward)
         self.encoder = TransformerEncoder(encoder_layer, 3)
 
-        # self.up2 = up(hidden_dim * 2 * num_cam, hidden_dim * num_cam)
-        # self.up1 = up(hidden_dim * 2 * num_cam, hidden_dim * num_cam)
-        # self.merge_linear = nn.Sequential(nn.Conv2d(hidden_dim * num_cam, hidden_dim, 1), nn.ReLU())
         self.upsample = nn.Sequential(nn.Upsample(np.ceil(np.array(Rworld_shape) / 2).astype(int).tolist(),
                                                   mode='bilinear'),
                                       nn.Conv2d(hidden_dim, hidden_dim, 3, 1, 1), nn.ReLU(),
@@ -103,17 +55,12 @@ class TransformerWorldFeat(nn.Module):
 
     def forward(self, x):
         B, N, C, H, W = x.shape
-        # x1 = self.down1(x.view(B * N, C, H_og, W_og))
-        # x2 = self.down2(x1)
         # _, _, H, W = x2.shape
         x = self.downsample(x.view(B, N * C, H, W))
         _, _, H, W = x.shape
         # H*W,B,C*N
         pos_embedding = self.pos_embedding.repeat(B, 1, 1, 1).flatten(2).permute(2, 0, 1).to(x.device)
         x = self.encoder(x.flatten(2).permute(2, 0, 1), pos=pos_embedding)
-        # x1 = self.up2(x2.permute(1, 2, 0).view(B, C * N, H, W), x1.view(B, C * N, H_og // 2, W_og // 2))
-        # x = self.up1(x1, x.view(B, C * N, H_og, W_og))
-        # merged_feat = self.merge_linear(x.permute(1, 2, 0).view(B, C * N, H, W))
         merged_feat = self.upsample(x.permute(1, 2, 0).view(B, C, H, W))
         return merged_feat
 
@@ -121,8 +68,6 @@ class TransformerWorldFeat(nn.Module):
 class DeformTransWorldFeat(nn.Module):
     def __init__(self, num_cam, Rworld_shape, hidden_dim=128, dropout=0.1, nhead=8, dim_feedforward=512):
         super(DeformTransWorldFeat, self).__init__()
-        # self.down1 = down(hidden_dim, hidden_dim)
-        # self.down2 = down(hidden_dim, hidden_dim)
         self.downsample = nn.Sequential(nn.Conv2d(hidden_dim, hidden_dim, 3, 2, 1), nn.ReLU(), )
 
         encoder_layer = DeformableTransformerEncoderLayer(hidden_dim, dim_feedforward, dropout,
@@ -131,8 +76,6 @@ class DeformTransWorldFeat(nn.Module):
         self.pos_embedding = create_pos_embedding(np.array(Rworld_shape) // 2, hidden_dim // 2)
         self.lvl_embedding = nn.Parameter(torch.Tensor(num_cam, hidden_dim))
 
-        # self.up2 = up(hidden_dim * 2 * num_cam, hidden_dim * num_cam)
-        # self.up1 = up(hidden_dim * 2 * num_cam, hidden_dim * num_cam)
         self.merge_linear = nn.Sequential(nn.Conv2d(hidden_dim * num_cam, hidden_dim, 1), nn.ReLU())
         self.upsample = nn.Sequential(nn.Upsample(Rworld_shape, mode='bilinear'),
                                       nn.Conv2d(hidden_dim, hidden_dim, 3, 1, 1), nn.ReLU(), )
@@ -140,8 +83,6 @@ class DeformTransWorldFeat(nn.Module):
 
     def forward(self, x):
         B, N, C, H, W = x.shape
-        # x1 = self.down1(x.view(B * N, C, H_og, W_og))
-        # x2 = self.down2(x1)
         x = self.downsample(x.view(B * N, C, H, W))
         _, _, H, W = x.shape
 
@@ -153,9 +94,6 @@ class DeformTransWorldFeat(nn.Module):
         valid_ratios = torch.ones([B, N, 2], device=x.device)
         memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten)
 
-        # x1 = self.up2(memory.view(B, N, H, W, C).permute(0, 1, 4, 2, 3).contiguous().view(B, N * C, H, W),
-        #               x1.view(B, C * N, H_og // 2, W_og // 2))
-        # x = self.up1(x1, x.view(B, C * N, H_og, W_og))
         merged_feat = self.merge_linear(memory.view(B, N, H, W, C).permute(0, 1, 4, 2, 3).contiguous().
                                         view(B, N * C, H, W))
         merged_feat = self.upsample(merged_feat)

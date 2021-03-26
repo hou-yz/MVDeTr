@@ -18,7 +18,6 @@ from multiview_detector.datasets import *
 from multiview_detector.models.mvdetr import MVDeTr
 from multiview_detector.utils.logger import Logger
 from multiview_detector.utils.draw_curve import draw_curve
-from multiview_detector.utils.image_utils import img_color_denormalize
 from multiview_detector.utils.str2bool import str2bool
 from multiview_detector.trainer import PerspectiveTrainer
 
@@ -50,7 +49,6 @@ def main(args):
         torch.backends.cudnn.benchmark = True
 
     # dataset
-    denormalize = img_color_denormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
     if 'wildtrack' in args.dataset:
         base = Wildtrack(os.path.expanduser('~/Data/Wildtrack'))
     elif 'multiviewx' in args.dataset:
@@ -99,14 +97,11 @@ def main(args):
     model = MVDeTr(train_set, args.arch, world_feat_arch=args.world_feat,
                    bottleneck_dim=args.bottleneck_dim, outfeat_dim=args.outfeat_dim, droupout=args.dropout)
 
-    base_param_ids = set(map(id, model.base.parameters()))
-    new_params = [p for p in model.parameters() if id(p) not in base_param_ids]
-    # optimizer = optim.SGD([{'params': model.base.parameters(), 'lr': args.lr * args.base_lr_ratio},
-    #                        {'params': new_params}, ], args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-    optimizer = optim.Adam([{'params': model.base.parameters(), 'lr': args.lr * args.base_lr_ratio},
-                            {'params': new_params}, ], args.lr, weight_decay=args.weight_decay)
-    # optimizer = optim.Adam(model.parameters(), args.lr, weight_decay=args.weight_decay)
-    # optimizer = optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    param_dicts = [{"params": [p for n, p in model.named_parameters() if 'base' not in n and p.requires_grad], },
+                   {"params": [p for n, p in model.named_parameters() if 'base' in n and p.requires_grad],
+                    "lr": args.lr * args.base_lr_ratio, }, ]
+    # optimizer = optim.SGD(param_dicts, lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
+    optimizer = optim.Adam(param_dicts, lr=args.lr, weight_decay=args.weight_decay)
     scaler = GradScaler()
 
     def warmup_lr_scheduler(epoch, warmup_epochs=2):
@@ -120,7 +115,7 @@ def main(args):
     #                                                 epochs=args.epochs)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, warmup_lr_scheduler)
 
-    trainer = PerspectiveTrainer(model, logdir, denormalize, args.cls_thres, args.alpha, args.use_mse, args.id_ratio)
+    trainer = PerspectiveTrainer(model, logdir, args.cls_thres, args.alpha, args.use_mse, args.id_ratio)
 
     # draw curve
     x_epoch = []
@@ -168,11 +163,10 @@ if __name__ == '__main__':
     parser.add_argument('-b', '--batch_size', type=int, default=1, help='input batch size for training (default: 1)')
     parser.add_argument('--dropout', type=float, default=0.5)
     parser.add_argument('--dropcam', type=float, default=0.0)
-    parser.add_argument('--epochs', type=int, default=20, help='number of epochs to train (default: 10)')
+    parser.add_argument('--epochs', type=int, default=10, help='number of epochs to train (default: 10)')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
-    parser.add_argument('--base_lr_ratio', type=float, default=1)
-    parser.add_argument('--weight_decay', type=float, default=5e-4)
-    parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum (default: 0.9)')
+    parser.add_argument('--base_lr_ratio', type=float, default=0.1)
+    parser.add_argument('--weight_decay', type=float, default=1e-4)
     parser.add_argument('--resume', type=str, default=None)
     parser.add_argument('--visualize', action='store_true')
     parser.add_argument('--seed', type=int, default=2021, help='random seed (default: None)')
@@ -183,7 +177,7 @@ if __name__ == '__main__':
                         choices=['conv', 'trans', 'deform_conv', 'deform_trans'])
     parser.add_argument('--bottleneck_dim', type=int, default=128)
     parser.add_argument('--outfeat_dim', type=int, default=128)
-    parser.add_argument('--world_reduce', type=int, default=5)
+    parser.add_argument('--world_reduce', type=int, default=4)
     parser.add_argument('--world_kernel_size', type=int, default=10)
     parser.add_argument('--img_reduce', type=int, default=12)
     parser.add_argument('--img_kernel_size', type=int, default=10)

@@ -11,7 +11,7 @@ from multiview_detector.evaluation.evaluate import evaluate
 from multiview_detector.utils.decode import ctdet_decode, mvdet_decode
 from multiview_detector.utils.nms import nms
 from multiview_detector.utils.meters import AverageMeter
-from multiview_detector.utils.image_utils import add_heatmap_to_image
+from multiview_detector.utils.image_utils import add_heatmap_to_image, img_color_denormalize
 
 
 class BaseTrainer(object):
@@ -20,7 +20,7 @@ class BaseTrainer(object):
 
 
 class PerspectiveTrainer(BaseTrainer):
-    def __init__(self, model, logdir, denormalize, cls_thres=0.4, alpha=1.0, use_mse=False, id_ratio=0):
+    def __init__(self, model, logdir, cls_thres=0.4, alpha=1.0, use_mse=False, id_ratio=0):
         super(BaseTrainer, self).__init__()
         self.model = model
         self.mse_loss = nn.MSELoss()
@@ -29,7 +29,7 @@ class PerspectiveTrainer(BaseTrainer):
         self.ce_loss = RegCELoss()
         self.cls_thres = cls_thres
         self.logdir = logdir
-        self.denormalize = denormalize
+        self.denormalize = img_color_denormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
         self.alpha = alpha
         self.use_mse = use_mse
         self.id_ratio = id_ratio

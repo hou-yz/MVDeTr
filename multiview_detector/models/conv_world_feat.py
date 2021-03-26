@@ -19,9 +19,10 @@ def create_coord_map(img_size, with_r=False):
 
 
 class ConvWorldFeat(nn.Module):
-    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=256, reduction=None):
+    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=128, reduction=None):
         super(ConvWorldFeat, self).__init__()
-        self.coord_map = create_coord_map(Rworld_shape)
+        # self.downsample = nn.Sequential(nn.Conv2d(base_dim, base_dim, 3, 2, 1), nn.ReLU(), )
+        self.coord_map = create_coord_map(np.array(Rworld_shape))
         self.reduction = reduction
         if self.reduction is None:
             combined_input_dim = base_dim * num_cam + 2
@@ -32,9 +33,13 @@ class ConvWorldFeat(nn.Module):
         self.world_feat = nn.Sequential(nn.Conv2d(combined_input_dim, hidden_dim, 3, padding=1), nn.ReLU(),
                                         nn.Conv2d(hidden_dim, hidden_dim, 3, padding=2, dilation=2), nn.ReLU(),
                                         nn.Conv2d(hidden_dim, base_dim, 3, padding=4, dilation=4), nn.ReLU(), )
+        # self.upsample = nn.Sequential(nn.Upsample(Rworld_shape, mode='bilinear'),
+        #                               nn.Conv2d(base_dim, base_dim, 3, 1, 1), nn.ReLU(), )
 
     def forward(self, x):
         B, N, C, H, W = x.shape
+        # x = self.downsample(x.view(B * N, C, H, W))
+        # _, _, H, W = x.shape
         if self.reduction is None:
             x = x.view(B, N * C, H, W)
         elif self.reduction == 'sum':
@@ -42,7 +47,9 @@ class ConvWorldFeat(nn.Module):
         else:
             raise Exception
         x = torch.cat([x, self.coord_map.repeat([B, 1, 1, 1]).to(x.device)], 1)
-        return self.world_feat(x)
+        x = self.world_feat(x)
+        # x = self.upsample(x)
+        return x
 
 
 class DeformConvWorldFeat(nn.Module):
@@ -71,7 +78,7 @@ class DeformConvWorldFeat(nn.Module):
 
 def test():
     in_feat = torch.zeros([1, 7, 128, 120, 360])
-    model = DeformConvWorldFeat(7, [120, 360], 128)
+    model = ConvWorldFeat(7, [120, 360], 128)
     out_feat = model(in_feat)
     pass
 
