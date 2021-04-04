@@ -26,7 +26,7 @@ def CLEAR_MOD_HUN(gt, det):
     [3]	MODA          - N-MODA
     [4]	MODP          - N-MODP
     """
-    td = 50 / 2.5
+    td = 50 / 2.5  # distance threshold
 
     F = int(max(gt[:, 0])) + 1
     N = int(max(det[:, 1])) + 1
@@ -70,7 +70,7 @@ def CLEAR_MOD_HUN(gt, det):
             tmpai[tmpai > td] = 1e6
             if not tmpai.all() == 1e6:
                 HUN_res = np.array(linear_sum_assignment(tmpai)).T
-                HUN_res = HUN_res[tmpai[HUN_res[:, 0], HUN_res[:, 1]] < 1e6]
+                HUN_res = HUN_res[tmpai[HUN_res[:, 0], HUN_res[:, 1]] < td]
                 u, v = HUN_res[HUN_res[:, 1].argsort()].T
                 for mmm in range(1, len(u) + 1):
                     M[t - 1, u[mmm - 1]] = v[mmm - 1] + 1
