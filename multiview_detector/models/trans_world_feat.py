@@ -8,6 +8,8 @@ from multiview_detector.models.transformer import TransformerEncoderLayer, Trans
 from multiview_detector.models.deformable_transformer import DeformableTransformerEncoderLayer, \
     DeformableTransformerEncoder
 from multiview_detector.models.ops.modules import MSDeformAttn
+from multiview_detector.utils.image_utils import array2heatmap
+import matplotlib.pyplot as plt
 
 
 def create_pos_embedding(img_size, num_pos_feats=64, temperature=10000, normalize=True, scale=None):
@@ -53,7 +55,7 @@ class TransformerWorldFeat(nn.Module):
                                       nn.Upsample(Rworld_shape, mode='bilinear'),
                                       nn.Conv2d(hidden_dim, hidden_dim, 3, 1, 1), nn.ReLU(), )
 
-    def forward(self, x):
+    def forward(self, x, visualize=False):
         B, N, C, H, W = x.shape
         # _, _, H, W = x2.shape
         x = self.downsample(x.view(B, N * C, H, W))
@@ -77,11 +79,11 @@ class DeformTransWorldFeat(nn.Module):
         self.lvl_embedding = nn.Parameter(torch.Tensor(num_cam, hidden_dim))
 
         self.merge_linear = nn.Sequential(nn.Conv2d(hidden_dim * num_cam, hidden_dim, 1), nn.ReLU())
-        self.upsample = nn.Sequential(nn.Upsample(Rworld_shape, mode='bilinear'),
+        self.upsample = nn.Sequential(nn.Upsample(Rworld_shape, mode='bilinear', align_corners=False),
                                       nn.Conv2d(hidden_dim, hidden_dim, 3, 1, 1), nn.ReLU(), )
         self._reset_parameters()
 
-    def forward(self, x):
+    def forward(self, x, visualize=False):
         B, N, C, H, W = x.shape
         x = self.downsample(x.view(B * N, C, H, W))
         _, _, H, W = x.shape
@@ -94,6 +96,13 @@ class DeformTransWorldFeat(nn.Module):
         valid_ratios = torch.ones([B, N, 2], device=x.device)
         memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten)
 
+        if visualize:
+            for cam in range(N):
+                world_feat = memory.view(B, N, H, W, C).permute(0, 1, 4, 2, 3).contiguous()
+                visualize_img = array2heatmap(torch.norm(world_feat[0, cam].detach(), dim=0).cpu())
+                visualize_img.save(f'../../imgs/worldfeat{cam + 1}.png')
+                plt.imshow(visualize_img)
+                plt.show()
         merged_feat = self.merge_linear(memory.view(B, N, H, W, C).permute(0, 1, 4, 2, 3).contiguous().
                                         view(B, N * C, H, W))
         merged_feat = self.upsample(merged_feat)

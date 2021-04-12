@@ -13,7 +13,6 @@ import torch
 from torch.cuda.amp import GradScaler
 from torch import optim
 from torch.utils.data import DataLoader
-import torchvision.transforms as T
 from multiview_detector.datasets import *
 from multiview_detector.models.mvdetr import MVDeTr
 from multiview_detector.utils.logger import Logger
@@ -76,7 +75,8 @@ def main(args):
     # logging
     if args.resume is None:
         logdir = f'logs/{args.dataset}/{"debug_" if is_debug else ""}{"SS_" if args.semi_supervised else ""}' \
-                 f'aug{args.augmentation.upper()}_{args.world_feat}_neck{args.bottleneck_dim}_out{args.outfeat_dim}_' \
+                 f'aug{args.augmentation.upper()}_{args.world_feat}_lr{args.lr}_baseR{args.base_lr_ratio}_' \
+                 f'neck{args.bottleneck_dim}_out{args.outfeat_dim}_' \
                  f'alpha{args.alpha}_id{args.id_ratio}_drop{args.dropout}_dropcam{args.dropcam}_' \
                  f'worldRK{args.world_reduce}_{args.world_kernel_size}_imgRK{args.img_reduce}_{args.img_kernel_size}_' \
                  f'{datetime.datetime.today():%Y-%m-%d_%H-%M-%S}'
@@ -95,7 +95,7 @@ def main(args):
 
     # model
     model = MVDeTr(train_set, args.arch, world_feat_arch=args.world_feat,
-                   bottleneck_dim=args.bottleneck_dim, outfeat_dim=args.outfeat_dim, droupout=args.dropout)
+                   bottleneck_dim=args.bottleneck_dim, outfeat_dim=args.outfeat_dim, droupout=args.dropout).cuda()
 
     param_dicts = [{"params": [p for n, p in model.named_parameters() if 'base' not in n and p.requires_grad], },
                    {"params": [p for n, p in model.named_parameters() if 'base' in n and p.requires_grad],
@@ -104,16 +104,16 @@ def main(args):
     optimizer = optim.Adam(param_dicts, lr=args.lr, weight_decay=args.weight_decay)
     scaler = GradScaler()
 
-    def warmup_lr_scheduler(epoch, warmup_epochs=2):
-        if epoch < warmup_epochs:
-            return epoch / warmup_epochs
-        else:
-            return (np.cos((epoch - warmup_epochs) / (args.epochs - warmup_epochs) * np.pi) + 1) / 2
+    # def warmup_lr_scheduler(epoch, warmup_epochs=2):
+    #     if epoch < warmup_epochs:
+    #         return epoch / warmup_epochs
+    #     else:
+    #         return (np.cos((epoch - warmup_epochs) / (args.epochs - warmup_epochs) * np.pi) + 1) / 2
 
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, args.epochs)
-    # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=len(train_loader),
-    #                                                 epochs=args.epochs)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, warmup_lr_scheduler)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, steps_per_epoch=len(train_loader),
+                                                    epochs=args.epochs)
+    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, warmup_lr_scheduler)
 
     trainer = PerspectiveTrainer(model, logdir, args.cls_thres, args.alpha, args.use_mse, args.id_ratio)
 
@@ -126,8 +126,6 @@ def main(args):
     # learn
     res_fpath = os.path.join(logdir, 'test.txt')
     if args.resume is None:
-        print('Testing...')
-        trainer.test(0, test_loader, res_fpath, visualize=True)
         for epoch in tqdm.tqdm(range(1, args.epochs + 1)):
             print('Training...')
             train_loss = trainer.train(epoch, train_loader, optimizer, scaler, scheduler)
@@ -176,7 +174,7 @@ if __name__ == '__main__':
     parser.add_argument('--world_feat', type=str, default='conv',
                         choices=['conv', 'trans', 'deform_conv', 'deform_trans'])
     parser.add_argument('--bottleneck_dim', type=int, default=128)
-    parser.add_argument('--outfeat_dim', type=int, default=128)
+    parser.add_argument('--outfeat_dim', type=int, default=64)
     parser.add_argument('--world_reduce', type=int, default=4)
     parser.add_argument('--world_kernel_size', type=int, default=10)
     parser.add_argument('--img_reduce', type=int, default=12)

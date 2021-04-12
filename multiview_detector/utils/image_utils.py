@@ -23,3 +23,12 @@ def add_heatmap_to_image(heatmap, image):
     cam_result = np.uint8(heatmap * 0.3 + image * 0.5)
     cam_result = Image.fromarray(cv2.cvtColor(cam_result, cv2.COLOR_BGR2RGB))
     return cam_result
+
+
+def array2heatmap(heatmap):
+    heatmap = heatmap - heatmap.min()
+    heatmap = heatmap / (heatmap.max() + 1e-8)
+    heatmap = np.uint8(255 * heatmap)
+    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_SUMMER)
+    heatmap = Image.fromarray(cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB))
+    return heatmap

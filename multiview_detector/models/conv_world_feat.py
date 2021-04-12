@@ -36,7 +36,7 @@ class ConvWorldFeat(nn.Module):
         # self.upsample = nn.Sequential(nn.Upsample(Rworld_shape, mode='bilinear'),
         #                               nn.Conv2d(base_dim, base_dim, 3, 1, 1), nn.ReLU(), )
 
-    def forward(self, x):
+    def forward(self, x, visualize=False):
         B, N, C, H, W = x.shape
         # x = self.downsample(x.view(B * N, C, H, W))
         # _, _, H, W = x.shape
@@ -63,7 +63,7 @@ class DeformConvWorldFeat(nn.Module):
                                         nn.Conv2d(hidden_dim, hidden_dim, 3, padding=2, dilation=2), nn.ReLU(),
                                         nn.Conv2d(hidden_dim, hidden_dim, 3, padding=4, dilation=4), nn.ReLU(), )
 
-    def forward(self, x):
+    def forward(self, x, visualize=False):
         B, N, C, H, W = x.shape
         feats = []
         for n in range(N):

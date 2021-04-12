@@ -50,7 +50,7 @@ def get_gt(Rshape, x_s, y_s, w_s=None, h_s=None, v_s=None, reduce=4, top_k=100, 
 
 class frameDataset(VisionDataset):
     def __init__(self, base, train=True, reID=False, world_reduce=4, img_reduce=12,
-                 world_kernel_size=20, img_kernel_size=10,
+                 world_kernel_size=10, img_kernel_size=10,
                  train_ratio=0.9, top_k=100, force_download=True,
                  semi_supervised=0.0, dropout=0.0, augmentation=''):
         super().__init__(base.root)
@@ -79,7 +79,8 @@ class frameDataset(VisionDataset):
 
         self.world_from_img, self.img_from_world = self.get_world_imgs_trans()
         world_masks = torch.ones([self.num_cam, 1] + self.worldgrid_shape)
-        self.imgs_region = kornia.warp_perspective(world_masks, self.img_from_world, self.img_shape, flags='nearest')
+        self.imgs_region = kornia.warp_perspective(world_masks, self.img_from_world, self.img_shape, 'nearest',
+                                                   align_corners=False)
 
         self.img_fpaths = self.base.get_image_fpaths(frame_range)
         self.world_gt = {}
@@ -224,8 +225,8 @@ class frameDataset(VisionDataset):
                 affine_mat[0, 2] = self.img_shape[1]
             affine_mat[:, 2] += crop
             affine_mat = torch.from_numpy(scale @ affine_mat).float()
-            img = kornia.warp_affine(img.unsqueeze(0), affine_mat.unsqueeze(0),
-                                     self.img_shape).squeeze(0)
+            img = kornia.warp_affine(img.unsqueeze(0), affine_mat.unsqueeze(0), self.img_shape,
+                                     align_corners=False).squeeze(0)
             imgs.append(T.functional.resize(img, (np.array(self.img_shape) * 8 // self.img_reduce).tolist()))
             affine_mats.append(affine_mat)
 
@@ -243,7 +244,8 @@ class frameDataset(VisionDataset):
         #     torch.cat([affine_mats, torch.tensor([0, 0, 1]).view(1, 1, 3).repeat(self.num_cam, 1, 1)], dim=1))[:, :2]
         imgs_gt = {key: torch.stack([img_gt[key] for img_gt in imgs_gt]) for key in imgs_gt[0]}
         imgs_gt['heatmap_mask'] = self.imgs_region if self.keeps[frame] else torch.zeros_like(self.imgs_region)
-        imgs_gt['heatmap_mask'] = kornia.warp_affine(imgs_gt['heatmap_mask'], affine_mats, self.img_shape)
+        imgs_gt['heatmap_mask'] = kornia.warp_affine(imgs_gt['heatmap_mask'], affine_mats, self.img_shape,
+                                                     align_corners=False)
         imgs_gt['heatmap_mask'] = F.interpolate(imgs_gt['heatmap_mask'], self.Rimg_shape, mode='bilinear',
                                                 align_corners=False).bool().float()
         drop, keep_cams = np.random.rand() < self.dropout, torch.ones(self.num_cam, dtype=torch.bool)
@@ -256,12 +258,6 @@ class frameDataset(VisionDataset):
         world_x_s, world_y_s, world_pid_s = self.world_gt[frame]
         world_gt = get_gt(self.Rworld_shape, world_x_s, world_y_s, v_s=world_pid_s,
                           reduce=self.world_reduce, top_k=self.top_k, kernel_size=self.world_kernel_size)
-        # imgs_mask = kornia.warp_affine(torch.ones([self.num_cam, 1] + self.img_shape), affine_mats, self.img_shape)
-        # imgs_mask = kornia.warp_affine(imgs_mask, inverse_affine_mats, self.img_shape)
-        # world_masks = kornia.warp_perspective(imgs_mask, self.world_from_img, self.worldgrid_shape, flags='nearest')
-        # world_gt['heatmap_mask'] = F.interpolate(torch.sum(world_masks, dim=0, keepdim=True), self.Rworld_shape,
-        #                                          mode='bilinear', align_corners=False).bool().squeeze(0)
-        # world_gt['heatmap'] = world_gt['heatmap'] * world_gt['heatmap_mask']
         return imgs, world_gt, imgs_gt, affine_mats, frame
 
     def __len__(self):
