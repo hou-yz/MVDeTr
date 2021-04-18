@@ -125,5 +125,4 @@ dmypy.json
 .pyre/
 
 .idea
-imgs/
-imgs - Copy/
+imgs*

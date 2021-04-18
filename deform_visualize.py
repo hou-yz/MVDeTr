@@ -16,34 +16,43 @@ from multiview_detector.datasets import *
 if __name__ == '__main__':
     multi = 10
     freq = 40
-    dataset = frameDataset(Wildtrack('/home/houyz/Data/Wildtrack'), train=False)
+    # dataset = frameDataset(Wildtrack('/home/houyz/Data/Wildtrack'), train=False)
+    dataset = frameDataset(MultiviewX('/home/houyz/Data/MultiviewX'), train=False)
     imgs, world_gt, imgs_gt, affine_mats, frame = dataset.__getitem__(0)
+
+    # add breakpoint to L112@'multiview_detector/models/ops/modules/ms_deform_attn.py',
+    # run 'torch.save(sampling_locations.detach().cpu(),'sampling_locations1')' to save the sampling locations,
+    # and run 'torch.save(attention_weights.detach().cpu(),'attention_weights1')' to save the attention weights
+    if 0:
+        model = MVDeTr(dataset, world_feat_arch='deform_trans').cuda()
+        # model.load_state_dict(torch.load('logs/wildtrack/augFCS_deform_trans_lr0.001_baseR0.1_neck128_out64_'
+        #                                  'alpha1.0_id0_drop0.5_dropcam0.0_worldRK4_10_imgRK12_10_2021-04-09_22-39-28/'
+        #                                  'MultiviewDetector.pth'))
+        model.load_state_dict(torch.load('logs/multiviewx/augFCS_deform_trans_lr0.001_baseR0.1_neck128_out64_'
+                                         'alpha1.0_id0_drop0.5_dropcam0.0_worldRK4_10_imgRK12_10_2021-04-10_01-32-01/'
+                                         'MultiviewDetector.pth'))
+        (world_heatmap, _), (_, _, _) = model(imgs.unsqueeze(0).cuda(), affine_mats.unsqueeze(0))
+        plt.imshow(world_heatmap.squeeze().detach().cpu().numpy())
+        plt.show()
     world_gt_location = torch.zeros(np.prod(dataset.Rworld_shape))
     world_gt_location[world_gt['idx'][world_gt['reg_mask']]] = 1
     world_gt_location = (F.interpolate(world_gt_location.view([1, 1, ] + dataset.Rworld_shape), scale_factor=0.5,
                                        mode='bilinear') > 0).squeeze()
     plt.imshow(world_gt_location)
     plt.show()
-
-    model = MVDeTr(dataset, world_feat_arch='deform_trans').cuda()
-    model.load_state_dict(torch.load('logs/wildtrack/augFCS_deform_trans_lr0.001_baseR0.1_neck128_out64_'
-                                     'alpha1.0_id0_drop0.5_dropcam0.0_worldRK4_10_imgRK12_10_2021-04-09_22-39-28/'
-                                     'MultiviewDetector.pth'))
-    # add breakpoint to L112@'multiview_detector/models/ops/modules/ms_deform_attn.py',
-    # run 'torch.save(sampling_locations.detach().cpu(),'sampling_locations1')' to save the sampling locations,
-    # and run 'torch.save(attention_weights.detach().cpu(),'attention_weights1')' to save the attention weights
-    if 0:
-        (world_heatmap, _), (_, _, _) = model(imgs.unsqueeze(0).cuda(), affine_mats.unsqueeze(0))
-        plt.imshow(world_heatmap.squeeze().detach().cpu().numpy())
-        plt.show()
-    # N, Len_q, n_heads, n_levels, n_points, 2
+    print(world_gt_location.nonzero())
     sampling_locations1 = torch.load('sampling_locations1')
     attention_weights1 = torch.load('attention_weights1')
     # len_q = n*h*w
     world_shape = (np.array(dataset.Rworld_shape) // 2).tolist()
     # ij indexing for gt locations in range [60,180]
-    # [ 33,  62] -> 33*180+62=6002
-    # [ 39,  101] -> 39*180+101=7121
+    # pos1_xy = np.array([33, 62])
+    # pos2_xy = np.array([39, 101])
+    pos1_xy = np.array([17, 78])
+    pos2_xy = np.array([50, 25])
+    pos_cam_offsets = np.prod(world_shape) * np.arange(dataset.num_cam)
+    pos1s = pos1_xy[0] * world_shape[1] + pos1_xy[1]  # + pos_cam_offsets
+    pos2s = pos2_xy[0] * world_shape[1] + pos2_xy[1]  # + pos_cam_offsets
     denorm = img_color_denormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
     pil_transform = T.Compose([T.Resize(dataset.img_shape), T.ToPILImage()])
     for cam in range(dataset.num_cam):
@@ -62,21 +71,22 @@ if __name__ == '__main__':
         world_img[world_mask] = [0, 0, 255]
 
         # xy indexing -> ij indexing
-        attend_points1 = (sampling_locations1[0, 6002, :, cam, :, [1, 0]].reshape([-1, 2]).clip(0, 1 - 1e-3) *
-                          torch.tensor(world_shape)).int().long()
-        attend_points2 = (sampling_locations1[0, 7121, :, cam, :, [1, 0]].reshape([-1, 2]).clip(0, 1 - 1e-3) *
-                          torch.tensor(world_shape)).int().long()
-        weight1 = attention_weights1[0, 6002, :, cam].reshape([-1])
-        weight1 = (weight1 / weight1.max()) ** 0.2
-        weight2 = attention_weights1[0, 7121, :, cam].reshape([-1])
-        weight2 = (weight2 / weight2.max()) ** 0.2
+        # N, Len_q, n_heads, n_levels, n_points, 2
+        attend_points1 = (sampling_locations1[0, pos1s, :, cam].reshape(
+            [-1, 2])[:, [1, 0]].clip(0, 1 - 1e-3) * torch.tensor(world_shape)).int().long()
+        attend_points2 = (sampling_locations1[0, pos2s, :, cam].reshape(
+            [-1, 2])[:, [1, 0]].clip(0, 1 - 1e-3) * torch.tensor(world_shape)).int().long()
+        weight1 = attention_weights1[0, pos1s, :, cam].reshape([-1])
+        weight1 = (weight1 / weight1.max()) ** 0.5
+        weight2 = attention_weights1[0, pos2s, :, cam].reshape([-1])
+        weight2 = (weight2 / weight2.max()) ** 0.5
         world_mask_points1 = torch.zeros(world_shape)
         world_mask_points2 = torch.zeros(world_shape)
         world_mask_points_og = torch.zeros(world_shape)
         world_mask_points1[attend_points1[:, 0], attend_points1[:, 1]] = weight1
         world_mask_points2[attend_points2[:, 0], attend_points2[:, 1]] = weight2
-        world_mask_points_og[33, 62] = 1
-        world_mask_points_og[39, 101] = 1
+        world_mask_points_og[pos1_xy[0], pos1_xy[1]] = 1
+        world_mask_points_og[pos2_xy[0], pos2_xy[1]] = 1
 
         world_mask_points1 = F.interpolate(world_mask_points1.view([1, 1] + world_shape),
                                            dataset.worldgrid_shape)
@@ -101,7 +111,7 @@ if __name__ == '__main__':
         world_grid[:, ::freq * multi] = 1
         world_grid[::freq * multi, :] = 1
         world_grid = np.array(np.where(world_grid)) / multi
-        world_coord = dataset.base.get_worldcoord_from_worldgrid(world_grid)
+        world_coord = dataset.base.get_worldcoord_from_worldgrid(world_grid)[[1, 0]]
         img_coord = projection.get_imagecoord_from_worldcoord(world_coord, dataset.base.intrinsic_matrices[cam],
                                                               dataset.base.extrinsic_matrices[cam])
         img_coord = (img_coord).astype(int)
