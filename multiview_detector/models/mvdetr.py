@@ -9,7 +9,7 @@ from multiview_detector.models.resnet import resnet18
 from multiview_detector.utils.image_utils import img_color_denormalize, array2heatmap
 from multiview_detector.utils.projection import get_worldcoord_from_imgcoord_mat
 from multiview_detector.models.conv_world_feat import ConvWorldFeat, DeformConvWorldFeat
-from multiview_detector.models.trans_world_feat import TransformerWorldFeat, DeformTransWorldFeat
+from multiview_detector.models.trans_world_feat import TransformerWorldFeat, DeformTransWorldFeat, DeformTransWorldFeat_aio
 import matplotlib.pyplot as plt
 
 
@@ -23,7 +23,7 @@ def fill_fc_weights(layers):
 def output_head(in_dim, feat_dim, out_dim):
     if feat_dim:
         fc = nn.Sequential(nn.Conv2d(in_dim, feat_dim, 3, padding=1), nn.ReLU(),
-                           nn.Conv2d(feat_dim, out_dim, 3, padding=1))
+                           nn.Conv2d(feat_dim, out_dim, 1))
     else:
         fc = nn.Sequential(nn.Conv2d(in_dim, out_dim, 1))
     return fc
@@ -85,6 +85,8 @@ class MVDeTr(nn.Module):
             self.world_feat = DeformConvWorldFeat(dataset.num_cam, dataset.Rworld_shape, base_dim)
         elif world_feat_arch == 'deform_trans':
             self.world_feat = DeformTransWorldFeat(dataset.num_cam, dataset.Rworld_shape, base_dim)
+        elif world_feat_arch == 'aio':
+            self.world_feat = DeformTransWorldFeat_aio(dataset.num_cam, dataset.Rworld_shape, base_dim)
         else:
             raise Exception
 
@@ -119,6 +121,8 @@ class MVDeTr(nn.Module):
         imgcoord_from_Rimggrid_mat = inverse_affine_mats @ \
                                      torch.from_numpy(np.diag([self.img_reduce, self.img_reduce, 1])
                                                       ).view(1, 3, 3).repeat(B * N, 1, 1).float()
+        # inverse_affine_mats = torch.inverse(imgcoord_from_Rimggrid_mat) @ \
+        #                       inverse_affine_mats @ imgcoord_from_Rimggrid_mat
         # Rworldgrid(xy)_from_Rimggrid(xy)
         proj_mats = self.proj_mats.repeat(B, 1, 1, 1).view(B * N, 3, 3).float() @ imgcoord_from_Rimggrid_mat
 
@@ -137,13 +141,22 @@ class MVDeTr(nn.Module):
         imgs_offset = self.img_offset(imgs_feat)
         imgs_wh = self.img_wh(imgs_feat)
         # imgs_id = self.img_id(imgs_feat)
-        if visualize:
-            for cam in range(N):
-                visualize_img = array2heatmap(torch.sigmoid(imgs_heatmap.detach())[cam * B, 0].cpu())
-                visualize_img.save(f'../../imgs/augimgres{cam + 1}.png')
-                plt.imshow(visualize_img)
-                plt.show()
+        # if visualize:
+        #     for cam in range(N):
+        #         visualize_img = array2heatmap(torch.sigmoid(imgs_heatmap.detach())[cam * B, 0].cpu())
+        #         visualize_img.save(f'../../imgs/augimgres{cam + 1}.png')
+        #         plt.imshow(visualize_img)
+        #         plt.show()
 
+        # # un-aug
+        # world_feat = kornia.warp_affine(imgs_feat, inverse_affine_mats.to(imgs.device)[:, :2, :],
+        #                                 self.Rimg_shape, align_corners=False)
+        # if visualize:
+        #     for cam in range(N):
+        #         visualize_img = array2heatmap(torch.norm(world_feat[cam * B].detach(), dim=0).cpu())
+        #         visualize_img.save(f'../../imgs/unaugimgfeat{cam + 1}.png')
+        #         plt.imshow(visualize_img)
+        #         plt.show()
         # world feat
         H, W = self.Rworld_shape
         world_feat = kornia.warp_perspective(imgs_feat, proj_mats.to(imgs.device),
@@ -180,14 +193,14 @@ def test():
     from torch.utils.data import DataLoader
     from multiview_detector.utils.decode import ctdet_decode
 
-    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=True, augmentation='FCS')
+    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=False, augmentation='FCS')
     dataloader = DataLoader(dataset, 1, False, num_workers=0)
     model = MVDeTr(dataset, world_feat_arch='deform_trans').cuda()
-    model.load_state_dict(torch.load(
-        '../../logs/wildtrack/augFCS_deform_trans_lr0.001_baseR0.1_neck128_out64_alpha1.0_id0_drop0.5_dropcam0.0_worldRK4_10_imgRK12_10_2021-04-09_22-39-28/MultiviewDetector.pth'))
+    # model.load_state_dict(torch.load(
+    #     '../../logs/wildtrack/augFCS_deform_trans_lr0.001_baseR0.1_neck128_out64_alpha1.0_id0_drop0.5_dropcam0.0_worldRK4_10_imgRK12_10_2021-04-09_22-39-28/MultiviewDetector.pth'))
     imgs, world_gt, imgs_gt, affine_mats, frame = next(iter(dataloader))
     imgs = imgs.cuda()
-    (world_heatmap, world_offset), (imgs_heatmap, imgs_offset, imgs_wh) = model(imgs, affine_mats, visualize=True)
+    (world_heatmap, world_offset), (imgs_heatmap, imgs_offset, imgs_wh) = model(imgs, affine_mats)
     xysc = ctdet_decode(world_heatmap, world_offset)
     pass
 

@@ -118,11 +118,46 @@ class DeformTransWorldFeat(nn.Module):
         normal_(self.lvl_embedding)
 
 
+class DeformTransWorldFeat_aio(nn.Module):
+    def __init__(self, num_cam, Rworld_shape, hidden_dim=128, nhead=8, encoder_dim=256):
+        super(DeformTransWorldFeat_aio, self).__init__()
+        self.merge = nn.Sequential(nn.Conv2d(hidden_dim * num_cam, encoder_dim, 1), nn.ReLU(), )
+        encoder_layer = DeformableTransformerEncoderLayer(encoder_dim, n_levels=1, n_heads=nhead)
+        self.encoder = DeformableTransformerEncoder(encoder_layer, 3)
+        self.pos_embedding = create_pos_embedding(Rworld_shape, encoder_dim // 2)
+        self.output = nn.Sequential(nn.Conv2d(encoder_dim, hidden_dim, 1), nn.ReLU(), )
+
+        self._reset_parameters()
+
+    def forward(self, x, visualize=False):
+        B, N, C, H, W = x.shape
+        x = self.merge(x.view(B, N * C, H, W))
+        B, C, H, W = x.shape
+        src_flatten = x.view(B, C, H, W).permute(0, 2, 3, 1).contiguous().view([B, H * W, C])
+        spatial_shapes = torch.as_tensor(np.array([[H, W]]), dtype=torch.long, device=x.device)
+        level_start_index = torch.cat((spatial_shapes.new_zeros((1,)), spatial_shapes.prod(1).cumsum(0)[:-1]))
+        valid_ratios = torch.ones([B, 1, 2], device=x.device)
+        memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios,
+                              self.pos_embedding.to(x.device).flatten(2).transpose(1, 2))
+
+        merged_feat = memory.view(B, H, W, C).permute(0, 3, 1, 2).contiguous().view(B, C, H, W)
+        merged_feat = self.output(merged_feat)
+        return merged_feat
+
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+        for m in self.modules():
+            if isinstance(m, MSDeformAttn):
+                m._reset_parameters()
+
+
 def test():
     H, W = 640 // 4, 1000 // 4
     in_feat = torch.zeros([1, 6, 128, H, W]).cuda()
-    model = TransformerWorldFeat(6, [H, W]).cuda()
-    # model = DeformTransWorldFeat(6, [H, W]).cuda()
+    # model = TransformerWorldFeat(6, [H, W]).cuda()
+    model = DeformTransWorldFeat_aio(6, [H, W]).cuda()
     out_feat = model(in_feat)
     pass
 

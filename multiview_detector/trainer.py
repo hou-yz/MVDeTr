@@ -58,8 +58,8 @@ class PerspectiveTrainer(BaseTrainer):
             # loss_img_id = self.ce_loss(imgs_id, imgs_gt['reg_mask'], imgs_gt['idx'], imgs_gt['pid'])
             # multiview regularization
 
-            w_loss = loss_w_hm + loss_w_off #+ self.id_ratio * loss_w_id
-            img_loss = loss_img_hm + loss_img_off + loss_img_wh * 0.1 #+ self.id_ratio * loss_img_id
+            w_loss = loss_w_hm + loss_w_off  # + self.id_ratio * loss_w_id
+            img_loss = loss_img_hm + loss_img_off + loss_img_wh * 0.1  # + self.id_ratio * loss_img_id
             loss = w_loss + img_loss / N * self.alpha
             if self.use_mse:
                 loss = self.mse_loss(world_heatmap, world_gt['heatmap'].to(world_heatmap.device)) + \
