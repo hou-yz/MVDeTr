@@ -38,10 +38,10 @@ def create_pos_embedding(img_size, num_pos_feats=64, temperature=10000, normaliz
 
 
 class TransformerWorldFeat(nn.Module):
-    def __init__(self, num_cam, Rworld_shape, hidden_dim=128, dropout=0.1, nhead=8, dim_feedforward=512):
+    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=128, dropout=0.1, nhead=8, dim_feedforward=512):
         super(TransformerWorldFeat, self).__init__()
-        self.downsample = nn.Sequential(nn.Conv2d(hidden_dim * num_cam, hidden_dim * num_cam, 3, 2, 1), nn.ReLU(),
-                                        nn.Conv2d(hidden_dim * num_cam, hidden_dim, 3, 2, 1), nn.ReLU(), )
+        self.downsample = nn.Sequential(nn.Conv2d(base_dim * num_cam, hidden_dim, 3, 2, 1), nn.ReLU(),
+                                        nn.Conv2d(hidden_dim, hidden_dim, 3, 2, 1), nn.ReLU(), )
 
         self.pos_embedding = create_pos_embedding(np.ceil(np.array(Rworld_shape) / 4).astype(int),
                                                   hidden_dim // 2)
@@ -68,14 +68,14 @@ class TransformerWorldFeat(nn.Module):
 
 
 class DeformTransWorldFeat(nn.Module):
-    def __init__(self, num_cam, Rworld_shape, hidden_dim=128, dropout=0.1, nhead=8, dim_feedforward=512):
+    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=128, dropout=0.1, nhead=8, dim_feedforward=512, stride=2, reference_points=None):
         super(DeformTransWorldFeat, self).__init__()
-        self.downsample = nn.Sequential(nn.Conv2d(hidden_dim, hidden_dim, 3, 2, 1), nn.ReLU(), )
+        self.downsample = nn.Sequential(nn.Conv2d(base_dim, hidden_dim, 3, stride, 1), nn.ReLU(), )
 
         encoder_layer = DeformableTransformerEncoderLayer(hidden_dim, dim_feedforward, dropout,
                                                           n_levels=num_cam, n_heads=nhead)
         self.encoder = DeformableTransformerEncoder(encoder_layer, 3)
-        self.pos_embedding = create_pos_embedding(np.array(Rworld_shape) // 2, hidden_dim // 2)
+        self.pos_embedding = create_pos_embedding(np.array(Rworld_shape) // stride, hidden_dim // 2)
         self.lvl_embedding = nn.Parameter(torch.Tensor(num_cam, hidden_dim))
 
         self.merge_linear = nn.Sequential(nn.Conv2d(hidden_dim * num_cam, hidden_dim, 1), nn.ReLU())
@@ -119,13 +119,13 @@ class DeformTransWorldFeat(nn.Module):
 
 
 class DeformTransWorldFeat_aio(nn.Module):
-    def __init__(self, num_cam, Rworld_shape, hidden_dim=128, nhead=8, encoder_dim=256):
+    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=128, dropout=0.1, nhead=8, dim_feedforward=512):
         super(DeformTransWorldFeat_aio, self).__init__()
-        self.merge = nn.Sequential(nn.Conv2d(hidden_dim * num_cam, encoder_dim, 1), nn.ReLU(), )
-        encoder_layer = DeformableTransformerEncoderLayer(encoder_dim, n_levels=1, n_heads=nhead)
+        self.merge = nn.Sequential(nn.Conv2d(base_dim * num_cam, hidden_dim, 1), nn.ReLU(), )
+        encoder_layer = DeformableTransformerEncoderLayer(hidden_dim, dim_feedforward, n_levels=1, n_heads=nhead)
         self.encoder = DeformableTransformerEncoder(encoder_layer, 3)
-        self.pos_embedding = create_pos_embedding(Rworld_shape, encoder_dim // 2)
-        self.output = nn.Sequential(nn.Conv2d(encoder_dim, hidden_dim, 1), nn.ReLU(), )
+        self.pos_embedding = create_pos_embedding(Rworld_shape, hidden_dim // 2)
+        self.output = nn.Sequential(nn.Conv2d(hidden_dim, hidden_dim, 1), nn.ReLU(), )
 
         self._reset_parameters()
 
@@ -156,8 +156,8 @@ class DeformTransWorldFeat_aio(nn.Module):
 def test():
     H, W = 640 // 4, 1000 // 4
     in_feat = torch.zeros([1, 6, 128, H, W]).cuda()
-    # model = TransformerWorldFeat(6, [H, W]).cuda()
-    model = DeformTransWorldFeat_aio(6, [H, W]).cuda()
+    # model = TransformerWorldFeat(6, [H, W], 128).cuda()
+    model = DeformTransWorldFeat(6, [H, W], 128).cuda()
     out_feat = model(in_feat)
     pass
 

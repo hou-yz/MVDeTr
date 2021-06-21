@@ -1,6 +1,10 @@
 import os
 import json
+import time
+from operator import itemgetter
 import copy
+
+import numpy as np
 from PIL import Image
 import kornia
 from torchvision.datasets import VisionDataset
@@ -8,14 +12,8 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
 from multiview_detector.utils.projection import *
-from multiview_detector.utils.gaussian import draw_umich_gaussian
+from multiview_detector.utils.image_utils import draw_umich_gaussian, random_affine
 import matplotlib.pyplot as plt
-
-
-def trans_gt(affine_mat, x_s, y_s, w_s, h_s):
-    x_s, y_s = affine_mat @ np.stack([x_s, y_s, np.ones_like(x_s)], axis=0)
-    w_s, h_s = affine_mat[:, :2] @ np.stack([w_s, h_s], axis=0)
-    return x_s.tolist(), y_s.tolist(), w_s.tolist(), h_s.tolist()
 
 
 def get_gt(Rshape, x_s, y_s, w_s=None, h_s=None, v_s=None, reduce=4, top_k=100, kernel_size=4):
@@ -52,7 +50,7 @@ class frameDataset(VisionDataset):
     def __init__(self, base, train=True, reID=False, world_reduce=4, img_reduce=12,
                  world_kernel_size=10, img_kernel_size=10,
                  train_ratio=0.9, top_k=100, force_download=True,
-                 semi_supervised=0.0, dropout=0.0, augmentation=''):
+                 semi_supervised=0.0, dropout=0.0, augmentation=False):
         super().__init__(base.root)
 
         self.base = base
@@ -65,9 +63,9 @@ class frameDataset(VisionDataset):
         self.world_kernel_size, self.img_kernel_size = world_kernel_size, img_kernel_size
         self.semi_supervised = semi_supervised * train
         self.dropout = dropout
-        self.transform = T.Compose([T.ToTensor(), T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)), ])
-        augmentation = augmentation.upper() if train else ''
-        self.crop, self.hflip, self.scale = 'F' in augmentation, 'C' in augmentation, 'S' in augmentation
+        self.transform = T.Compose([T.ToTensor(), T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+                                    T.Resize((np.array(self.img_shape) * 8 // self.img_reduce).tolist())])
+        self.augmentation = augmentation
 
         self.Rworld_shape = list(map(lambda x: x // self.world_reduce, self.worldgrid_shape))
         self.Rimg_shape = np.ceil(np.array(self.img_shape) / self.img_reduce).astype(int).tolist()
@@ -96,49 +94,32 @@ class frameDataset(VisionDataset):
                 keep = np.mean(np.array(frame_range) < frame) < self.semi_supervised if self.semi_supervised else 1
                 with open(os.path.join(self.root, 'annotations_positions', fname)) as json_file:
                     all_pedestrians = json.load(json_file)
-                world_x_s, world_y_s, world_pid_s = [], [], []
-                img_x_s, img_y_s = [[] for _ in range(self.num_cam)], [[] for _ in range(self.num_cam)]
-                img_w_s, img_h_s = [[] for _ in range(self.num_cam)], [[] for _ in range(self.num_cam)]
-                img_pid_s = [[] for _ in range(self.num_cam)]
-                for pedestrian in all_pedestrians:
-                    grid_x, grid_y = self.base.get_worldgrid_from_pos(pedestrian['positionID']).squeeze()
-                    if pedestrian['personID'] in self.pid_dict:
-                        pid = self.pid_dict[pedestrian['personID']]
-                    else:
-                        pid = self.pid_dict[pedestrian['personID']] = len(self.pid_dict)
-                    num_all += 1
-                    num_keep += keep
-                    num_world_bbox += keep
-                    if keep:
+                world_pts, world_pids = [], []
+                img_bboxs, img_pids = [[] for _ in range(self.num_cam)], [[] for _ in range(self.num_cam)]
+                if keep:
+                    for pedestrian in all_pedestrians:
+                        grid_x, grid_y = self.base.get_worldgrid_from_pos(pedestrian['positionID']).squeeze()
+                        if pedestrian['personID'] not in self.pid_dict:
+                            self.pid_dict[pedestrian['personID']] = len(self.pid_dict)
+                        num_all += 1
+                        num_keep += keep
+                        num_world_bbox += keep
                         if self.base.indexing == 'xy':
-                            world_x_s.append(grid_x)
-                            world_y_s.append(grid_y)
+                            world_pts.append((grid_x, grid_y))
                         else:
-                            world_x_s.append(grid_y)
-                            world_y_s.append(grid_x)
-                        world_pid_s.append(pid)
-                    for cam in range(self.num_cam):
-                        if not (pedestrian['views'][cam]['xmax'] == -1 and pedestrian['views'][cam]['xmin'] == -1 and
-                                pedestrian['views'][cam]['ymax'] == -1 and pedestrian['views'][cam]['ymin'] == -1):
-                            x1 = max(min(pedestrian['views'][cam]['xmin'], self.img_shape[1] - 1), 0)
-                            x2 = max(min(pedestrian['views'][cam]['xmax'], self.img_shape[1] - 1), 0)
-                            y1 = max(min(pedestrian['views'][cam]['ymin'], self.img_shape[0] - 1), 0)
-                            y2 = max(min(pedestrian['views'][cam]['ymax'], self.img_shape[0] - 1), 0)
-                            x_foot, y_foot = (x1 + x2) // 2, y2
-                            x_head, y_head = (x1 + x2) // 2, y1
-                            width, height = x2 - x1, y2 - y1
-                            if keep:
-                                img_x_s[cam].append(x_foot)
-                                img_y_s[cam].append(y_foot)
-                                img_w_s[cam].append(width)
-                                img_h_s[cam].append(height)
-                                img_pid_s[cam].append(pid)
+                            world_pts.append((grid_y, grid_x))
+                        world_pids.append(self.pid_dict[pedestrian['personID']])
+                        for cam in range(self.num_cam):
+                            if itemgetter('xmin', 'ymin', 'xmax', 'ymax')(pedestrian['views'][cam]) != (-1, -1, -1, -1):
+                                img_bboxs[cam].append(itemgetter('xmin', 'ymin', 'xmax', 'ymax')
+                                                      (pedestrian['views'][cam]))
+                                img_pids[cam].append(self.pid_dict[pedestrian['personID']])
                                 num_imgs_bbox += 1
-                self.world_gt[frame] = (world_x_s, world_y_s, world_pid_s)
+                self.world_gt[frame] = (np.array(world_pts), np.array(world_pids))
                 self.imgs_gt[frame] = {}
                 for cam in range(self.num_cam):
-                    # xywh
-                    self.imgs_gt[frame][cam] = (img_x_s[cam], img_y_s[cam], img_w_s[cam], img_h_s[cam], img_pid_s[cam])
+                    # x1y1x2y2
+                    self.imgs_gt[frame][cam] = (np.array(img_bboxs[cam]), np.array(img_pids[cam]))
                 self.keeps[frame] = keep
 
         print(f'all: pid: {len(self.pid_dict)}, frame: {num_frame}, keep ratio: {num_keep / num_all:.3f}\n'
@@ -195,44 +176,38 @@ class frameDataset(VisionDataset):
 
     def __getitem__(self, index, visualize=False):
         def plt_visualize():
-            fig, ax = plt.subplots(1)
-            ax.imshow(img.permute(1, 2, 0))
+            import cv2
             from matplotlib.patches import Circle
+            fig, ax = plt.subplots(1)
+            ax.imshow(img)
             for i in range(len(img_x_s)):
                 x, y = img_x_s[i], img_y_s[i]
                 if x > 0 and y > 0:
                     ax.add_patch(Circle((x, y), 10))
             plt.show()
+            img0 = img.copy()
+            for bbox in img_bboxs:
+                bbox = tuple(int(pt) for pt in bbox)
+                cv2.rectangle(img0, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+            plt.imshow(img0)
+            plt.show()
 
         frame = list(self.world_gt.keys())[index]
         # imgs
-        imgs, imgs_gt, affine_mats = [], [], []
+        imgs, imgs_gt, affine_mats, masks = [], [], [], []
         for cam in range(self.num_cam):
-            fpath = self.img_fpaths[cam][frame]
-            img = Image.open(fpath).convert('RGB')
-            img = self.transform(img)
-            # visualize
-            if visualize:
-                img_x_s, img_y_s, img_w_s, img_h_s, img_pid_s = self.imgs_gt[frame][cam]
-                plt_visualize()
-            # img(xy)_from_img(xy)
-            affine_mat = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float)
-            hflip = np.random.rand() < 0.5 if self.hflip else 0
-            crop = (np.random.rand(2) - 0.5) * np.array(self.img_shape[::-1]) * (0.4 if self.crop else 0)
-            scale = (np.random.choice(np.arange(0.6, 1.4, 0.1)) if self.scale else 1) * np.eye(2)
-            if hflip:
-                affine_mat[0, 0] = -1
-                affine_mat[0, 2] = self.img_shape[1]
-            affine_mat[:, 2] += crop
-            affine_mat = torch.from_numpy(scale @ affine_mat).float()
-            img = kornia.warp_affine(img.unsqueeze(0), affine_mat.unsqueeze(0), self.img_shape,
-                                     align_corners=False).squeeze(0)
-            imgs.append(T.functional.resize(img, (np.array(self.img_shape) * 8 // self.img_reduce).tolist()))
-            affine_mats.append(affine_mat)
+            img = np.array(Image.open(self.img_fpaths[cam][frame]).convert('RGB'))
+            img_bboxs, img_pids = self.imgs_gt[frame][cam]
+            if self.augmentation:
+                img, img_bboxs, img_pids, M = random_affine(img, img_bboxs, img_pids)
+            else:
+                M = np.eye(3)
+            imgs.append(self.transform(img))
+            affine_mats.append(torch.from_numpy(M).float())
+            img_x_s, img_y_s = (img_bboxs[:, 0] + img_bboxs[:, 2]) / 2, img_bboxs[:, 3]
+            img_w_s, img_h_s = (img_bboxs[:, 2] - img_bboxs[:, 0]), (img_bboxs[:, 3] - img_bboxs[:, 1])
 
-            img_x_s, img_y_s, img_w_s, img_h_s, img_pid_s = self.imgs_gt[frame][cam]
-            img_x_s, img_y_s, img_w_s, img_h_s = trans_gt(affine_mat.numpy(), img_x_s, img_y_s, img_w_s, img_h_s)
-            img_gt = get_gt(self.Rimg_shape, img_x_s, img_y_s, img_w_s, img_h_s, v_s=img_pid_s,
+            img_gt = get_gt(self.Rimg_shape, img_x_s, img_y_s, img_w_s, img_h_s, v_s=img_pids,
                             reduce=self.img_reduce, top_k=self.top_k, kernel_size=self.img_kernel_size)
             imgs_gt.append(img_gt)
             if visualize:
@@ -240,14 +215,14 @@ class frameDataset(VisionDataset):
 
         imgs = torch.stack(imgs)
         affine_mats = torch.stack(affine_mats)
-        # inverse_affine_mats = torch.inverse(
+        # inverse_M = torch.inverse(
         #     torch.cat([affine_mats, torch.tensor([0, 0, 1]).view(1, 1, 3).repeat(self.num_cam, 1, 1)], dim=1))[:, :2]
         imgs_gt = {key: torch.stack([img_gt[key] for img_gt in imgs_gt]) for key in imgs_gt[0]}
-        imgs_gt['heatmap_mask'] = self.imgs_region if self.keeps[frame] else torch.zeros_like(self.imgs_region)
-        imgs_gt['heatmap_mask'] = kornia.warp_affine(imgs_gt['heatmap_mask'], affine_mats, self.img_shape,
-                                                     align_corners=False)
-        imgs_gt['heatmap_mask'] = F.interpolate(imgs_gt['heatmap_mask'], self.Rimg_shape, mode='bilinear',
-                                                align_corners=False).bool().float()
+        # imgs_gt['heatmap_mask'] = self.imgs_region if self.keeps[frame] else torch.zeros_like(self.imgs_region)
+        # imgs_gt['heatmap_mask'] = kornia.warp_perspective(imgs_gt['heatmap_mask'], affine_mats, self.img_shape,
+        #                                                   align_corners=False)
+        # imgs_gt['heatmap_mask'] = F.interpolate(imgs_gt['heatmap_mask'], self.Rimg_shape, mode='bilinear',
+        #                                         align_corners=False).bool().float()
         drop, keep_cams = np.random.rand() < self.dropout, torch.ones(self.num_cam, dtype=torch.bool)
         if drop:
             drop_cam = np.random.randint(0, self.num_cam)
@@ -255,8 +230,8 @@ class frameDataset(VisionDataset):
             for key in imgs_gt:
                 imgs_gt[key][drop_cam] = 0
         # world gt
-        world_x_s, world_y_s, world_pid_s = self.world_gt[frame]
-        world_gt = get_gt(self.Rworld_shape, world_x_s, world_y_s, v_s=world_pid_s,
+        world_pt_s, world_pid_s = self.world_gt[frame]
+        world_gt = get_gt(self.Rworld_shape, world_pt_s[:, 0], world_pt_s[:, 1], v_s=world_pid_s,
                           reduce=self.world_reduce, top_k=self.top_k, kernel_size=self.world_kernel_size)
         return imgs, world_gt, imgs_gt, affine_mats, frame
 
@@ -269,7 +244,7 @@ def test(test_projection=False):
     from multiview_detector.datasets.Wildtrack import Wildtrack
     from multiview_detector.datasets.MultiviewX import MultiviewX
 
-    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=True, augmentation='FCS')
+    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=True, augmentation=False)
     # dataset = frameDataset(MultiviewX(os.path.expanduser('~/Data/MultiviewX')), train=True)
     # dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=True, semi_supervised=.1)
     # dataset = frameDataset(MultiviewX(os.path.expanduser('~/Data/MultiviewX')), train=True, semi_supervised=.1)
@@ -277,17 +252,17 @@ def test(test_projection=False):
     # dataset = frameDataset(MultiviewX(os.path.expanduser('~/Data/MultiviewX')), train=True, semi_supervised=0.5)
     min_dist = np.inf
     for world_gt in dataset.world_gt.values():
-        x, y = np.array(world_gt[0]), np.array(world_gt[1])
+        x, y = world_gt[0][:, 0], world_gt[0][:, 1]
         if x.size and y.size:
-            x_dists = np.abs(x - x[:, None])
-            y_dists = np.abs(y - y[:, None])
-            xy_dists = (x_dists ** 2 + y_dists ** 2) ** 0.5
+            xy_dists = ((x - x[:, None]) ** 2 + (y - y[:, None]) ** 2) ** 0.5
             np.fill_diagonal(xy_dists, np.inf)
             min_dist = min(min_dist, np.min(xy_dists))
             pass
     dataloader = DataLoader(dataset, 2, True, num_workers=0)
-    # imgs, world_gt, imgs_gt, affine_mats, frame = next(iter(dataloader))
-    imgs, world_gt, imgs_gt, affine_mats, frame = dataset.__getitem__(188, visualize=True)
+    # imgs, world_gt, imgs_gt, M, frame = next(iter(dataloader))
+    t0 = time.time()
+    imgs, world_gt, imgs_gt, M, frame = dataset.__getitem__(0, visualize=False)
+    print(time.time() - t0)
 
     pass
     if test_projection:
@@ -323,4 +298,4 @@ def test(test_projection=False):
 
 
 if __name__ == '__main__':
-    test()
+    test(True)

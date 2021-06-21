@@ -53,7 +53,7 @@ class ConvWorldFeat(nn.Module):
 
 
 class DeformConvWorldFeat(nn.Module):
-    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=256, ):
+    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=128, ):
         super(DeformConvWorldFeat, self).__init__()
         self.pos_embedding = create_pos_embedding(Rworld_shape, base_dim // 2)
         self.deform_pos = nn.ModuleList([nn.Conv2d(base_dim, 9 * 2, 1) for _ in range(num_cam)])

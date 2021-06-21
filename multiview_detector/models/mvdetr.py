@@ -7,9 +7,10 @@ import torchvision.transforms as T
 import kornia
 from multiview_detector.models.resnet import resnet18
 from multiview_detector.utils.image_utils import img_color_denormalize, array2heatmap
-from multiview_detector.utils.projection import get_worldcoord_from_imgcoord_mat
+from multiview_detector.utils.projection import get_worldcoord_from_imgcoord_mat, project_2d_points
 from multiview_detector.models.conv_world_feat import ConvWorldFeat, DeformConvWorldFeat
-from multiview_detector.models.trans_world_feat import TransformerWorldFeat, DeformTransWorldFeat, DeformTransWorldFeat_aio
+from multiview_detector.models.trans_world_feat import TransformerWorldFeat, DeformTransWorldFeat, \
+    DeformTransWorldFeat_aio
 import matplotlib.pyplot as plt
 
 
@@ -103,28 +104,31 @@ class MVDeTr(nn.Module):
         fill_fc_weights(self.world_offset)
         pass
 
-    def forward(self, imgs, affine_mats, visualize=False):
+    def forward(self, imgs, M, visualize=False):
         B, N, C, H, W = imgs.shape
         imgs = imgs.view(B * N, C, H, W)
+
+        inverse_affine_mats = torch.inverse(M.view([B * N, 3, 3]))
+        # image and world feature maps from xy indexing, change them into world indexing / xy indexing (img)
+        imgcoord_from_Rimggrid_mat = inverse_affine_mats @ \
+                                     torch.from_numpy(np.diag([self.img_reduce, self.img_reduce, 1])
+                                                      ).view(1, 3, 3).repeat(B * N, 1, 1).float()
+        # Rworldgrid(xy)_from_Rimggrid(xy)
+        proj_mats = self.proj_mats.repeat(B, 1, 1, 1).view(B * N, 3, 3).float() @ imgcoord_from_Rimggrid_mat
+
         if visualize:
             denorm = img_color_denormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+            proj_imgs = kornia.warp_perspective(T.Resize(self.Rimg_shape)(imgs), proj_mats.to(imgs.device),
+                                                self.Rworld_shape, align_corners=False). \
+                view(B, N, 3, self.Rworld_shape[0], self.Rworld_shape[1])
             for cam in range(N):
                 visualize_img = T.ToPILImage()(denorm(imgs.detach())[cam * B])
                 visualize_img.save(f'../../imgs/augimg{cam + 1}.png')
                 plt.imshow(visualize_img)
                 plt.show()
-
-        affine_mats = torch.cat([affine_mats.view(B * N, 2, 3),
-                                 torch.tensor([0, 0, 1]).view(1, 1, 3).repeat(B * N, 1, 1)], dim=1)
-        inverse_affine_mats = torch.inverse(affine_mats)
-        # image and world feature maps from xy indexing, change them into world indexing / xy indexing (img)
-        imgcoord_from_Rimggrid_mat = inverse_affine_mats @ \
-                                     torch.from_numpy(np.diag([self.img_reduce, self.img_reduce, 1])
-                                                      ).view(1, 3, 3).repeat(B * N, 1, 1).float()
-        # inverse_affine_mats = torch.inverse(imgcoord_from_Rimggrid_mat) @ \
-        #                       inverse_affine_mats @ imgcoord_from_Rimggrid_mat
-        # Rworldgrid(xy)_from_Rimggrid(xy)
-        proj_mats = self.proj_mats.repeat(B, 1, 1, 1).view(B * N, 3, 3).float() @ imgcoord_from_Rimggrid_mat
+                visualize_img = T.ToPILImage()(denorm(proj_imgs.detach())[0, cam])
+                plt.imshow(visualize_img)
+                plt.show()
 
         imgs_feat = self.base(imgs)
         imgs_feat = self.bottleneck(imgs_feat)
@@ -140,23 +144,7 @@ class MVDeTr(nn.Module):
         imgs_heatmap = self.img_heatmap(imgs_feat)
         imgs_offset = self.img_offset(imgs_feat)
         imgs_wh = self.img_wh(imgs_feat)
-        # imgs_id = self.img_id(imgs_feat)
-        # if visualize:
-        #     for cam in range(N):
-        #         visualize_img = array2heatmap(torch.sigmoid(imgs_heatmap.detach())[cam * B, 0].cpu())
-        #         visualize_img.save(f'../../imgs/augimgres{cam + 1}.png')
-        #         plt.imshow(visualize_img)
-        #         plt.show()
 
-        # # un-aug
-        # world_feat = kornia.warp_affine(imgs_feat, inverse_affine_mats.to(imgs.device)[:, :2, :],
-        #                                 self.Rimg_shape, align_corners=False)
-        # if visualize:
-        #     for cam in range(N):
-        #         visualize_img = array2heatmap(torch.norm(world_feat[cam * B].detach(), dim=0).cpu())
-        #         visualize_img.save(f'../../imgs/unaugimgfeat{cam + 1}.png')
-        #         plt.imshow(visualize_img)
-        #         plt.show()
         # world feat
         H, W = self.Rworld_shape
         world_feat = kornia.warp_perspective(imgs_feat, proj_mats.to(imgs.device),
@@ -193,7 +181,8 @@ def test():
     from torch.utils.data import DataLoader
     from multiview_detector.utils.decode import ctdet_decode
 
-    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=False, augmentation='FCS')
+    dataset = frameDataset(Wildtrack(os.path.expanduser('~/Data/Wildtrack')), train=False, augmentation=False)
+    create_reference_map(dataset, 4)
     dataloader = DataLoader(dataset, 1, False, num_workers=0)
     model = MVDeTr(dataset, world_feat_arch='deform_trans').cuda()
     # model.load_state_dict(torch.load(
