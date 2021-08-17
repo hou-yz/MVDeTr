@@ -126,3 +126,4 @@ dmypy.json
 
 .idea
 imgs*
+.vscode/
