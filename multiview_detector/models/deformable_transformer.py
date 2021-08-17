@@ -20,10 +20,11 @@ from multiview_detector.models.ops.modules import MSDeformAttn
 
 
 class DeformableTransformerEncoder(nn.Module):
-    def __init__(self, encoder_layer, num_layers):
+    def __init__(self, encoder_layer, num_layers, reference_points=None):
         super().__init__()
         self.layers = _get_clones(encoder_layer, num_layers)
         self.num_layers = num_layers
+        self.reference_points = reference_points
 
     @staticmethod
     def get_reference_points(spatial_shapes, valid_ratios, device):
@@ -41,7 +42,10 @@ class DeformableTransformerEncoder(nn.Module):
 
     def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None):
         output = src
-        reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
+        if self.reference_points is None:
+            reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
+        else:
+            reference_points = self.reference_points.unsqueeze(0).repeat([src.shape[0], 1, 1, 1, 1]).to(src.device)
         for _, layer in enumerate(self.layers):
             output = layer(output, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
 
@@ -82,4 +86,4 @@ class DeformableTransformerEncoderLayer(nn.Module):
 
 
 def _get_clones(module, N):
-    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
+    return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])

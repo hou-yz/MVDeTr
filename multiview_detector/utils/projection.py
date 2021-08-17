@@ -2,9 +2,15 @@ import numpy as np
 
 
 def project_2d_points(project_mat, input_points):
+    vertical_flag = 0
+    if input_points.shape[1] == 2:
+        vertical_flag = 1
+        input_points = np.transpose(input_points)
     input_points = np.concatenate([input_points, np.ones([1, input_points.shape[1]])], axis=0)
     output_points = project_mat @ input_points
     output_points = output_points[:2, :] / output_points[2, :]
+    if vertical_flag:
+        output_points = np.transpose(output_points)
     return output_points
 
 

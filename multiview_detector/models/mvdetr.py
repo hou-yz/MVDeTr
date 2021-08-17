@@ -30,6 +30,47 @@ def output_head(in_dim, feat_dim, out_dim):
     return fc
 
 
+def create_reference_map(dataset, n_points=4, downsample=2, visualize=False):
+    H, W = dataset.Rworld_shape  # H,W; N_row,N_col
+    H, W = H // downsample, W // downsample
+    ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H - 0.5, H, dtype=torch.float32),
+                                  torch.linspace(0.5, W - 0.5, W, dtype=torch.float32))
+    ref = torch.stack((ref_x, ref_y), -1).reshape([-1, 2])
+    if n_points == 4:
+        zs = [0, 0, 0, 0]
+    elif n_points == 8:
+        zs = [-0.4, -0.2, 0, 0, 0.2, 0.4, 1, 1.8]
+    else:
+        raise Exception
+    ref_maps = torch.zeros([H * W, dataset.num_cam, n_points, 2])
+    world_zoom_mat = np.diag([dataset.world_reduce * downsample, dataset.world_reduce * downsample, 1])
+    Rworldgrid_from_worldcoord_mat = np.linalg.inv(
+        dataset.base.worldcoord_from_worldgrid_mat @ world_zoom_mat @ dataset.base.world_indexing_from_xy_mat)
+    for cam in range(dataset.num_cam):
+        mat_0 = Rworldgrid_from_worldcoord_mat @ get_worldcoord_from_imgcoord_mat(dataset.base.intrinsic_matrices[cam],
+                                                                                  dataset.base.extrinsic_matrices[cam])
+        for i, z in enumerate(zs):
+            mat_z = Rworldgrid_from_worldcoord_mat @ get_worldcoord_from_imgcoord_mat(
+                dataset.base.intrinsic_matrices[cam],
+                dataset.base.extrinsic_matrices[cam],
+                z / dataset.base.worldcoord_unit)
+            img_pts = project_2d_points(np.linalg.inv(mat_z), ref)
+            ref_maps[:, cam, i, :] = torch.from_numpy(project_2d_points(mat_0, img_pts))
+        pass
+        if visualize:
+            fig, ax = plt.subplots()
+            field_x = (ref_maps[:, cam, 3, 0] - ref_maps[:, cam, 1, 0]).reshape([H, W])
+            field_y = (ref_maps[:, cam, 3, 1] - ref_maps[:, cam, 1, 1]).reshape([H, W])
+            ax.streamplot(ref_x.numpy(), ref_y.numpy(), field_x.numpy(), field_y.numpy())
+            ax.set_aspect('equal', 'box')
+            ax.invert_yaxis()
+            plt.show()
+
+    ref_maps[:, :, :, 0] /= W
+    ref_maps[:, :, :, 1] /= H
+    return ref_maps
+
+
 class MVDeTr(nn.Module):
     def __init__(self, dataset, arch='resnet18', z=0, world_feat_arch='conv',
                  bottleneck_dim=128, outfeat_dim=64, droupout=0.5):
@@ -85,7 +126,10 @@ class MVDeTr(nn.Module):
         elif world_feat_arch == 'deform_conv':
             self.world_feat = DeformConvWorldFeat(dataset.num_cam, dataset.Rworld_shape, base_dim)
         elif world_feat_arch == 'deform_trans':
-            self.world_feat = DeformTransWorldFeat(dataset.num_cam, dataset.Rworld_shape, base_dim)
+            n_points = 4
+            reference_points = create_reference_map(dataset, n_points).repeat([dataset.num_cam, 1, 1, 1])
+            self.world_feat = DeformTransWorldFeat(dataset.num_cam, dataset.Rworld_shape, base_dim,
+                                                   n_points=n_points, stride=2, reference_points=reference_points)
         elif world_feat_arch == 'aio':
             self.world_feat = DeformTransWorldFeat_aio(dataset.num_cam, dataset.Rworld_shape, base_dim)
         else:
