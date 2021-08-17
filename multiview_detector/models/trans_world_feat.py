@@ -68,13 +68,14 @@ class TransformerWorldFeat(nn.Module):
 
 
 class DeformTransWorldFeat(nn.Module):
-    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=128, dropout=0.1, nhead=8, dim_feedforward=512, stride=2, reference_points=None):
+    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=128, dropout=0.1, nhead=8, dim_feedforward=512,
+                 n_points=4, stride=2, reference_points=None):
         super(DeformTransWorldFeat, self).__init__()
         self.downsample = nn.Sequential(nn.Conv2d(base_dim, hidden_dim, 3, stride, 1), nn.ReLU(), )
 
         encoder_layer = DeformableTransformerEncoderLayer(hidden_dim, dim_feedforward, dropout,
-                                                          n_levels=num_cam, n_heads=nhead)
-        self.encoder = DeformableTransformerEncoder(encoder_layer, 3)
+                                                          n_levels=num_cam, n_heads=nhead, n_points=n_points)
+        self.encoder = DeformableTransformerEncoder(encoder_layer, 3, reference_points)
         self.pos_embedding = create_pos_embedding(np.array(Rworld_shape) // stride, hidden_dim // 2)
         self.lvl_embedding = nn.Parameter(torch.Tensor(num_cam, hidden_dim))
 
