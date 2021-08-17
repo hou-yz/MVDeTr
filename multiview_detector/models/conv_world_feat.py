@@ -19,10 +19,10 @@ def create_coord_map(img_size, with_r=False):
 
 
 class ConvWorldFeat(nn.Module):
-    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=128, reduction=None):
+    def __init__(self, num_cam, Rworld_shape, base_dim, hidden_dim=128, stride=2, reduction=None):
         super(ConvWorldFeat, self).__init__()
-        # self.downsample = nn.Sequential(nn.Conv2d(base_dim, base_dim, 3, 2, 1), nn.ReLU(), )
-        self.coord_map = create_coord_map(np.array(Rworld_shape))
+        self.downsample = nn.Sequential(nn.Conv2d(base_dim, hidden_dim, 3, stride, 1), nn.ReLU(), )
+        self.coord_map = create_coord_map(np.array(Rworld_shape) // stride)
         self.reduction = reduction
         if self.reduction is None:
             combined_input_dim = base_dim * num_cam + 2
@@ -32,14 +32,14 @@ class ConvWorldFeat(nn.Module):
             raise Exception
         self.world_feat = nn.Sequential(nn.Conv2d(combined_input_dim, hidden_dim, 3, padding=1), nn.ReLU(),
                                         nn.Conv2d(hidden_dim, hidden_dim, 3, padding=2, dilation=2), nn.ReLU(),
-                                        nn.Conv2d(hidden_dim, base_dim, 3, padding=4, dilation=4), nn.ReLU(), )
-        # self.upsample = nn.Sequential(nn.Upsample(Rworld_shape, mode='bilinear'),
-        #                               nn.Conv2d(base_dim, base_dim, 3, 1, 1), nn.ReLU(), )
+                                        nn.Conv2d(hidden_dim, hidden_dim, 3, padding=4, dilation=4), nn.ReLU(), )
+        self.upsample = nn.Sequential(nn.Upsample(Rworld_shape, mode='bilinear', align_corners=False),
+                                      nn.Conv2d(hidden_dim, base_dim, 3, 1, 1), nn.ReLU(), )
 
     def forward(self, x, visualize=False):
         B, N, C, H, W = x.shape
-        # x = self.downsample(x.view(B * N, C, H, W))
-        # _, _, H, W = x.shape
+        x = self.downsample(x.view(B * N, C, H, W))
+        _, _, H, W = x.shape
         if self.reduction is None:
             x = x.view(B, N * C, H, W)
         elif self.reduction == 'sum':
@@ -48,7 +48,7 @@ class ConvWorldFeat(nn.Module):
             raise Exception
         x = torch.cat([x, self.coord_map.repeat([B, 1, 1, 1]).to(x.device)], 1)
         x = self.world_feat(x)
-        # x = self.upsample(x)
+        x = self.upsample(x)
         return x
 
 
