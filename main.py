@@ -172,7 +172,7 @@ if __name__ == '__main__':
     parser.add_argument('--deterministic', type=str2bool, default=False)
     parser.add_argument('--augmentation', type=str2bool, default=True)
 
-    parser.add_argument('--world_feat', type=str, default='conv',
+    parser.add_argument('--world_feat', type=str, default='deform_trans',
                         choices=['conv', 'trans', 'deform_conv', 'deform_trans', 'aio'])
     parser.add_argument('--bottleneck_dim', type=int, default=128)
     parser.add_argument('--outfeat_dim', type=int, default=0)
