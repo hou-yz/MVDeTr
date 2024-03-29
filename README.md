@@ -76,4 +76,4 @@ This repo supports multiple loss terms. For the focal loss variant as in MVDeTr,
 This repo includes support for view coherent data augmentation, which applies affine transformations onto the per-view inputs, and then invert the per-view feature maps to maintain multiview coherency. 
 
 ### Pre-trained models
-You can download the checkpoints at this [link](https://anu365-my.sharepoint.com/:u:/g/personal/u6852178_anu_edu_au/EVNIQ4rklKJFl8kzKv_faBoBjss7KFacNEION9Cn9D8daQ?e=1ecKDz).
+You can download the checkpoints at this [link](https://1drv.ms/u/s!AtzsQybTubHfhNRDo-mUXOWPd3Di4Q?e=monHmQ).
